@@ -400,6 +400,184 @@ function ActionCard({ data, type, isActive }) {
   );
 }
 
+
+// ─── NEURAL NETWORK VISUALIZER ────────────────────────────────────────────────
+function NeuralNetVisualizer({ lastAttack, lastDefense, step }) {
+  // Simulate neuron activations based on current actions
+  const getActivations = (actionId, layerSize, layer) => {
+    if (actionId === null || actionId === undefined) return Array(layerSize).fill(0);
+    const seed = (actionId * 7 + layer * 13 + step) % 100;
+    return Array(layerSize).fill(0).map((_, i) => {
+      const val = Math.sin(i * 0.5 + seed * 0.3 + actionId * 0.7) * 0.5 + 0.5;
+      return Math.max(0, val);
+    });
+  };
+
+  const attackId = ATTACKS.findIndex(a => a.name === lastAttack?.name);
+  const defenseId = DEFENSES.findIndex(d => d.name === lastDefense?.name);
+
+  const layers = [
+    { name: "INPUT", size: 6, color: COLORS.purple },
+    { name: "HIDDEN 1", size: 8, color: COLORS.blue },
+    { name: "HIDDEN 2", size: 8, color: COLORS.green },
+    { name: "OUTPUT", size: 4, color: COLORS.yellow },
+  ];
+
+  const W = 280;
+  const H = 220;
+  const layerX = (i) => 30 + i * (W - 40) / (layers.length - 1);
+  const neuronY = (idx, total) => 20 + (idx + 0.5) * (H - 40) / total;
+
+  return (
+    <PixelBorder style={{ padding: "10px" }}>
+      <div style={{
+        color: COLORS.gray, fontFamily: PIXEL_FONT,
+        fontSize: "9px", letterSpacing: "2px", marginBottom: "6px"
+      }}>
+        ► DQN NEURAL NETWORK — LIVE
+      </div>
+
+      {/* Two networks side by side */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
+        {[
+          { label: "RED TEAM BRAIN", color: COLORS.red, actionId: attackId },
+          { label: "BLUE TEAM BRAIN", color: COLORS.blue, actionId: defenseId },
+        ].map(({ label, color, actionId }) => {
+          return (
+            <div key={label}>
+              <div style={{
+                color, fontFamily: PIXEL_FONT,
+                fontSize: "8px", marginBottom: "4px", textAlign: "center"
+              }}>
+                {label}
+              </div>
+              <svg width="100%" viewBox={`0 0 ${W} ${H}`}
+                style={{ background: `${color}08`, borderRadius: "4px" }}>
+
+                {/* Draw connections between layers */}
+                {layers.slice(0, -1).map((layer, li) => {
+                  const nextLayer = layers[li + 1];
+                  const acts = getActivations(actionId, layer.size, li);
+                  const nextActs = getActivations(actionId, nextLayer.size, li + 1);
+                  return Array(layer.size).fill(0).map((_, ni) =>
+                    Array(nextLayer.size).fill(0).map((_, nj) => {
+                      const strength = (acts[ni] + nextActs[nj]) / 2;
+                      return (
+                        <line
+                          key={`${li}-${ni}-${nj}`}
+                          x1={layerX(li)} y1={neuronY(ni, layer.size)}
+                          x2={layerX(li + 1)} y2={neuronY(nj, nextLayer.size)}
+                          stroke={color}
+                          strokeWidth={strength * 1.5}
+                          opacity={strength * 0.4}
+                        />
+                      );
+                    })
+                  );
+                })}
+
+                {/* Draw neurons */}
+                {layers.map((layer, li) => {
+                  const acts = getActivations(actionId, layer.size, li);
+                  return acts.map((activation, ni) => {
+                    const x = layerX(li);
+                    const y = neuronY(ni, layer.size);
+                    const r = 7;
+                    return (
+                      <g key={`${li}-${ni}`}>
+                        <motion.circle
+                          cx={x} cy={y} r={r}
+                          fill={layer.color}
+                          opacity={0.2 + activation * 0.8}
+                          animate={{
+                            opacity: [
+                              0.2 + activation * 0.8,
+                              0.2 + activation * 0.6,
+                              0.2 + activation * 0.8
+                            ]
+                          }}
+                          transition={{
+                            duration: 1 + activation,
+                            repeat: Infinity
+                          }}
+                          style={{
+                            filter: activation > 0.6
+                              ? `drop-shadow(0 0 4px ${layer.color})`
+                              : "none"
+                          }}
+                        />
+                        <circle
+                          cx={x} cy={y} r={r}
+                          fill="none"
+                          stroke={layer.color}
+                          strokeWidth="1"
+                          opacity={0.6}
+                        />
+                      </g>
+                    );
+                  });
+                })}
+
+                {/* Layer labels */}
+                {layers.map((layer, li) => (
+                  <text
+                    key={li}
+                    x={layerX(li)} y={H - 5}
+                    textAnchor="middle"
+                    fontSize="7"
+                    fill={COLORS.gray}
+                    fontFamily={PIXEL_FONT}
+                  >
+                    {layer.name}
+                  </text>
+                ))}
+              </svg>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Current decision display */}
+      <div style={{
+        display: "grid", gridTemplateColumns: "1fr 1fr",
+        gap: "6px", marginTop: "8px"
+      }}>
+        <div style={{
+          border: `1px solid ${COLORS.red}`,
+          background: `${COLORS.red}10`,
+          padding: "6px", borderRadius: "2px", textAlign: "center"
+        }}>
+          <div style={{ color: COLORS.gray, fontFamily: PIXEL_FONT, fontSize: "7px" }}>
+            ATTACKER CHOSE
+          </div>
+          <div style={{ fontSize: "16px", margin: "2px 0" }}>
+            {lastAttack?.emoji || "❓"}
+          </div>
+          <div style={{ color: COLORS.red, fontFamily: PIXEL_FONT, fontSize: "8px" }}>
+            {lastAttack?.name || "WAITING..."}
+          </div>
+        </div>
+        <div style={{
+          border: `1px solid ${COLORS.blue}`,
+          background: `${COLORS.blue}10`,
+          padding: "6px", borderRadius: "2px", textAlign: "center"
+        }}>
+          <div style={{ color: COLORS.gray, fontFamily: PIXEL_FONT, fontSize: "7px" }}>
+            DEFENDER CHOSE
+          </div>
+          <div style={{ fontSize: "16px", margin: "2px 0" }}>
+            {lastDefense?.emoji || "❓"}
+          </div>
+          <div style={{ color: COLORS.blue, fontFamily: PIXEL_FONT, fontSize: "8px" }}>
+            {lastDefense?.name || "WAITING..."}
+          </div>
+        </div>
+      </div>
+    </PixelBorder>
+  );
+}
+
+
 function RewardChart({ redRewards, blueRewards }) {
   const maxVal = Math.max(...redRewards, ...blueRewards, 100);
   const w = 340, h = 80;
@@ -912,13 +1090,17 @@ useEffect(() => {
             blocked={gameState.blocked}
             honeypots={gameState.honeypots}
           />
+          <NeuralNetVisualizer
+            lastAttack={gameState.lastAttack}
+            lastDefense={gameState.lastDefense}
+            step={gameState.step}
+          />
           <RewardChart
             redRewards={gameState.redRewards}
             blueRewards={gameState.blueRewards}
           />
           <BattleLog logs={gameState.battleLog} />
         </div>
-      </div>
 
       {/* Game Over */}
       <AnimatePresence>
