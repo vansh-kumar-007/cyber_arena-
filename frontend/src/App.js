@@ -753,11 +753,11 @@ export default function App() {
   }, [gameState.isRunning, gameState.speed]);
 
   // Auto-save when game ends
-  useEffect(() => {
-    if (!gameState.isRunning && gameState.step >= 200) {
-      saveSession(gameState, fullLog);
-    }
-  }, [gameState.isRunning, gameState.step]);
+useEffect(() => {
+  if (!gameState.isRunning && gameState.step >= 200) {
+    saveSession(gameState, fullLog);
+  }
+}, [gameState.isRunning, gameState.step, gameState, fullLog, saveSession]);
 
   return (
     <div style={{
