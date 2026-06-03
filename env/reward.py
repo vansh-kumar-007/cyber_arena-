@@ -1,26 +1,30 @@
 # env/reward.py
+# Reward shaping for DQN — rewards need to guide learning step by step
 
 def calculate_attacker_reward(event, node_value=0, damage=0, stealth=1.0):
     if event == "exploit_success":
-        return (10 * node_value) + (5 * damage)
+        return (8 * node_value) + (3 * damage)   # Immediate progress reward
 
     elif event == "critical_node_reached":
-        return 50 + (10 * damage)
+        return 40 + (8 * damage)
 
     elif event == "detected":
-        return -25 * (1 - stealth)   # Stealthy attacks hurt less when detected
+        return -10 * (1 - stealth)               # Stealth attacks hurt less
 
     elif event == "wasted_action":
-        return -1
+        return -0.5                               # Very small penalty — don't discourage exploration
 
     elif event == "ransomware_success":
-        return 80                     # Huge reward for ransomware
-
-    elif event == "data_exfil_success":
         return 60
 
+    elif event == "data_exfil_success":
+        return 40
+
     elif event == "ddos_success":
-        return 20
+        return 15
+
+    elif event == "move_to_new_node":
+        return 1.0                                # Small reward for exploring
 
     else:
         return 0
@@ -28,22 +32,22 @@ def calculate_attacker_reward(event, node_value=0, damage=0, stealth=1.0):
 
 def calculate_defender_reward(event, attack_damage=0):
     if event == "attack_detected":
-        return 15 + (2 * attack_damage)
+        return 8 + attack_damage
 
     elif event == "attack_blocked":
-        return 25 + (3 * attack_damage)
+        return 12 + (2 * attack_damage)
 
     elif event == "false_positive":
-        return -5
+        return -3
 
     elif event == "critical_node_compromised":
-        return -50 - (5 * attack_damage)
+        return -30 - (3 * attack_damage)
 
     elif event == "honeypot_triggered":
-        return 30                     # Big reward for catching attacker in honeypot
+        return 20
 
     elif event == "patch_success":
-        return 10
+        return 5
 
     else:
         return 0

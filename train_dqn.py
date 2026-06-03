@@ -9,7 +9,7 @@ from agents.dqn_attacker import DQNAttacker
 from agents.dqn_defender import DQNDefender
 from utils.metrics import Metrics
 
-def train_dqn(num_episodes=2000, save_models=True):
+def train_dqn(num_episodes=3000, save_models=True):
     print("=" * 55)
     print("   CyberArena RL — DQN Training")
     print("   Neural Network Mode (PyTorch)")
@@ -62,8 +62,8 @@ def train_dqn(num_episodes=2000, save_models=True):
                 att_action, def_action
             )
             # Normalize rewards to similar scale — critical for DQN stability
-            att_reward = np.clip(att_reward / 50.0, -2.0, 2.0)
-            def_reward = np.clip(def_reward / 50.0, -2.0, 2.0)
+            att_reward = np.clip(att_reward / 30.0, -3.0, 3.0)
+            def_reward = np.clip(def_reward / 30.0, -3.0, 3.0)
 
             # Store experiences
             attacker.remember(state, att_action, att_reward, next_state,

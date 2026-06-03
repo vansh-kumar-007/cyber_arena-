@@ -90,7 +90,11 @@ class NetworkEnvironment:
                         if n not in self.blocked_nodes
                         and n not in self.isolated_nodes]
             if reachable:
-                self.attacker_position = random.choice(reachable)
+                new_node = random.choice(reachable)
+                self.attacker_position = new_node
+                # Reward for moving toward uncompromised nodes
+                if not self.compromised[new_node]:
+                    attacker_reward += calculate_attacker_reward("move_to_new_node")
                 self.log(f"🔀 Attacker moved to {self.attacker_position}")
             else:
                 attacker_reward += calculate_attacker_reward("wasted_action")
