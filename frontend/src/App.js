@@ -966,12 +966,65 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      {/* Log Viewer */}
-      <AnimatePresence>
-        {showLogs && (
-          <LogViewer sessions={sessions} onClose={() => setShowLogs(false)} />
-        )}
-      </AnimatePresence>
+      {/* Footer */}
+      <div style={{
+        marginTop: "32px",
+        borderTop: `1px solid ${COLORS.border}`,
+        paddingTop: "16px",
+        display: "flex",
+        justifyContent: "center",
+        alignItems: "center",
+        gap: "24px",
+        flexWrap: "wrap",
+      }}>
+        <div style={{ color: COLORS.gray, fontFamily: PIXEL_FONT, fontSize: "9px", letterSpacing: "2px" }}>
+          BUILT BY VANSH KUMAR
+        </div>
+
+        <motion.a
+          href="https://github.com/vansh-kumar-007"
+          target="_blank"
+          rel="noopener noreferrer"
+          whileHover={{ scale: 1.05, boxShadow: `0 0 12px ${COLORS.white}` }}
+          style={{
+            display: "flex", alignItems: "center", gap: "8px",
+            border: `1px solid ${COLORS.border}`,
+            background: COLORS.panel,
+            padding: "8px 16px",
+            textDecoration: "none",
+            borderRadius: "2px",
+          }}
+        >
+          <span style={{ fontSize: "16px" }}>🐙</span>
+          <span style={{ color: COLORS.white, fontFamily: PIXEL_FONT, fontSize: "10px", letterSpacing: "2px" }}>
+            GITHUB
+          </span>
+        </motion.a>
+
+        <motion.a
+          href="https://www.linkedin.com/in/vanshkumar007/"
+          target="_blank"
+          rel="noopener noreferrer"
+          whileHover={{ scale: 1.05, boxShadow: `0 0 12px #0077b5` }}
+          style={{
+            display: "flex", alignItems: "center", gap: "8px",
+            border: `1px solid #0077b5`,
+            background: COLORS.panel,
+            padding: "8px 16px",
+            textDecoration: "none",
+            borderRadius: "2px",
+          }}
+        >
+          <span style={{ fontSize: "16px" }}>💼</span>
+          <span style={{ color: "#0077b5", fontFamily: PIXEL_FONT, fontSize: "10px", letterSpacing: "2px" }}>
+            LINKEDIN
+          </span>
+        </motion.a>
+
+        <div style={{ color: COLORS.gray, fontFamily: PIXEL_FONT, fontSize: "9px", letterSpacing: "1px" }}>
+          CYBER ARENA RL — MULTI-AGENT RL SIMULATION
+        </div>
+      </div>
     </div>
   );
 }
