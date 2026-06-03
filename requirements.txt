@@ -2,3 +2,7 @@ numpy
 matplotlib
 networkx
 streamlit
+fastapi
+uvicorn
+torch
+pydantic
