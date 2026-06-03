@@ -1,6 +1,19 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 
+// ─── API CONFIG ───────────────────────────────────────────────────────────────
+const API_URL = "http://localhost:8000";
+
+async function apiCall(endpoint, method = "GET") {
+  try {
+    const res = await fetch(`${API_URL}${endpoint}`, { method });
+    const data = await res.json();
+    return data.data;
+  } catch (e) {
+    return null;
+  }
+}
+
 // ─── PIXEL ART STYLES ─────────────────────────────────────────────────────────
 const PIXEL_FONT = "'Courier New', monospace";
 
@@ -1100,6 +1113,8 @@ export default function App() {
   const [showLogs, setShowLogs] = useState(false);
   const [fullLog, setFullLog] = useState([]);
   const intervalRef = useRef(null);
+  const [useRealAI, setUseRealAI] = useState(false);
+  const [apiConnected, setApiConnected] = useState(false);
 
 const saveSession = useCallback((state, log) => {
   const winner = state.redScore > state.blueScore ? "RED" : "BLUE";
@@ -1127,7 +1142,10 @@ const saveSession = useCallback((state, log) => {
   } catch (e) {}
 }, [sessions]);
 
-  const startGame = () => {
+  const startGame = async () => {
+    if (useRealAI && apiConnected) {
+      await apiCall("/reset", "POST");
+    }
     setGameState(prev => ({ ...prev, isRunning: true }));
   };
 
@@ -1145,26 +1163,75 @@ const saveSession = useCallback((state, log) => {
     });
   };
 
+  // Check API connection on load
+  useEffect(() => {
+    fetch(`${API_URL}/status`)
+      .then(r => r.json())
+      .then(() => setApiConnected(true))
+      .catch(() => setApiConnected(false));
+  }, []);
+
   useEffect(() => {
     if (gameState.isRunning) {
-      intervalRef.current = setInterval(() => {
+      intervalRef.current = setInterval(async () => {
         setGameState(prev => {
           if (prev.step >= 200) {
             return { ...prev, isRunning: false };
           }
-          const next = runSimulationStep(prev);
-          // Collect full log
-          if (next.battleLog[0] !== prev.battleLog[0]) {
-            setFullLog(fl => [next.battleLog[0], ...fl]);
-          }
-          return next;
+          return prev;
         });
+
+        if (useRealAI && apiConnected) {
+          // Use REAL Python DQN
+          const data = await apiCall("/step", "POST");
+          if (data) {
+            setGameState(prev => {
+              if (prev.step >= 200) return { ...prev, isRunning: false };
+              const s = data.state;
+              const attack = ATTACKS[data.att_action] || null;
+              const defense = DEFENSES[data.def_action] || null;
+              const newLog = s.battle_log || [];
+              const newRedScore = s.attacker_score || prev.redScore;
+              const newBlueScore = s.defender_score || prev.blueScore;
+
+              return {
+                ...prev,
+                compromised: s.compromised,
+                attackerPosition: s.attacker_position,
+                detectionScore: s.detection_score,
+                blocked: s.blocked_nodes || [],
+                honeypots: s.honeypots || [],
+                idsActive: s.ids_active,
+                redScore: newRedScore,
+                blueScore: newBlueScore,
+                step: data.step,
+                lastAttack: attack,
+                lastDefense: defense,
+                lastEvent: null,
+                battleLog: newLog,
+                redRewards: [...prev.redRewards, newRedScore],
+                blueRewards: [...prev.blueRewards, newBlueScore],
+                isRunning: !data.done,
+              };
+            });
+          }
+        } else {
+          // Use frontend simulation
+          setGameState(prev => {
+            if (prev.step >= 200) return { ...prev, isRunning: false };
+            const next = runSimulationStep(prev);
+            if (next.battleLog[0] !== prev.battleLog[0]) {
+              setFullLog(fl => [next.battleLog[0], ...fl]);
+            }
+            return next;
+          });
+        }
       }, gameState.speed);
     } else {
       clearInterval(intervalRef.current);
     }
     return () => clearInterval(intervalRef.current);
-  }, [gameState.isRunning, gameState.speed]);
+  }, [gameState.isRunning, gameState.speed, useRealAI, apiConnected]);
 
 // Auto-save when game ends
 useEffect(() => {
@@ -1238,6 +1305,36 @@ useEffect(() => {
             >{spd === 50 ? "TURBO" : spd === 200 ? "FAST" : spd === 500 ? "NORMAL" : "SLOW"}</motion.button>
           ))}
         </div>
+
+        {/* AI Mode Toggle */}
+        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          <span style={{ color: COLORS.gray, fontSize: "10px", fontFamily: PIXEL_FONT }}>
+            AI MODE:
+          </span>
+          <motion.button
+            whileHover={{ scale: 1.05 }}
+            onClick={() => setUseRealAI(false)}
+            style={{
+              background: !useRealAI ? COLORS.green : "transparent",
+              border: `1px solid ${COLORS.green}`,
+              color: !useRealAI ? COLORS.bg : COLORS.green,
+              fontFamily: PIXEL_FONT, fontSize: "9px",
+              padding: "4px 10px", cursor: "pointer",
+            }}
+          >SIM</motion.button>
+          <motion.button
+            whileHover={{ scale: 1.05 }}
+            onClick={() => setUseRealAI(true)}
+            style={{
+              background: useRealAI ? COLORS.purple : "transparent",
+              border: `1px solid ${apiConnected ? COLORS.purple : COLORS.gray}`,
+              color: useRealAI ? COLORS.white : apiConnected ? COLORS.purple : COLORS.gray,
+              fontFamily: PIXEL_FONT, fontSize: "9px",
+              padding: "4px 10px", cursor: "pointer",
+            }}
+          >🧠 REAL DQN {apiConnected ? "●" : "○"}</motion.button>
+        </div>
+
       </div>
 
       {/* Session ID display */}
