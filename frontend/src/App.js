@@ -198,6 +198,8 @@ const initialState = {
   blueRewards: [],
   isRunning: false,
   speed: 500,
+  sessionId: null,      
+  startTime: null,
 };
 
 // ─── COMPONENTS ───────────────────────────────────────────────────────────────
@@ -486,9 +488,230 @@ function NodeStatusGrid({ compromised, blocked, honeypots }) {
 }
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
+// ─── SESSION LOG HELPERS ──────────────────────────────────────────────────────
+function generateSessionId() {
+  return "SESSION-" + Date.now().toString(36).toUpperCase();
+}
+
+function formatTime(ts) {
+  return new Date(ts).toLocaleString();
+}
+
+function LogViewer({ sessions, onClose }) {
+  const [selected, setSelected] = useState(sessions.length > 0 ? sessions.length - 1 : null);
+  const session = selected !== null ? sessions[selected] : null;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      style={{
+        position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
+        background: "rgba(0,0,0,0.92)", zIndex: 200,
+        display: "flex", flexDirection: "column",
+        padding: "24px", fontFamily: PIXEL_FONT,
+      }}
+    >
+      {/* Header */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+        <div style={{ color: COLORS.green, fontSize: "18px", letterSpacing: "4px" }}>
+          ► SESSION LOGS
+        </div>
+        <motion.button
+          whileHover={{ scale: 1.05 }}
+          onClick={onClose}
+          style={{
+            background: "transparent", border: `2px solid ${COLORS.red}`,
+            color: COLORS.red, fontFamily: PIXEL_FONT,
+            fontSize: "12px", padding: "6px 16px", cursor: "pointer",
+          }}
+        >✕ CLOSE</motion.button>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "280px 1fr", gap: "16px", flex: 1, overflow: "hidden" }}>
+
+        {/* Session list */}
+        <PixelBorder style={{ padding: "10px", overflowY: "auto" }}>
+          <div style={{ color: COLORS.gray, fontSize: "9px", letterSpacing: "2px", marginBottom: "8px" }}>
+            SAVED SESSIONS ({sessions.length})
+          </div>
+          {sessions.length === 0 && (
+            <div style={{ color: COLORS.gray, fontSize: "10px", padding: "8px" }}>
+              No sessions saved yet. Play a game first!
+            </div>
+          )}
+          {sessions.map((s, i) => (
+            <motion.div
+              key={s.sessionId}
+              whileHover={{ scale: 1.02 }}
+              onClick={() => setSelected(i)}
+              style={{
+                border: `1px solid ${selected === i ? COLORS.green : COLORS.border}`,
+                background: selected === i ? `${COLORS.green}15` : "transparent",
+                padding: "10px", marginBottom: "6px",
+                cursor: "pointer", borderRadius: "2px",
+              }}
+            >
+              <div style={{ color: COLORS.green, fontSize: "8px" }}>{s.sessionId}</div>
+              <div style={{ color: COLORS.gray, fontSize: "8px", marginTop: "2px" }}>{formatTime(s.startTime)}</div>
+              <div style={{ display: "flex", gap: "8px", marginTop: "6px" }}>
+                <span style={{ color: COLORS.red, fontSize: "9px" }}>RED: {s.finalRedScore}</span>
+                <span style={{ color: COLORS.blue, fontSize: "9px" }}>BLUE: {s.finalBlueScore}</span>
+              </div>
+              <div style={{
+                color: s.winner === "RED" ? COLORS.red : COLORS.blue,
+                fontSize: "9px", marginTop: "2px", fontWeight: "bold"
+              }}>
+                {s.winner} TEAM WON
+              </div>
+            </motion.div>
+          ))}
+        </PixelBorder>
+
+        {/* Session detail */}
+        {session ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: "12px", overflow: "hidden" }}>
+
+            {/* Stats */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "8px" }}>
+              {[
+                { label: "SESSION ID", value: session.sessionId, color: COLORS.green },
+                { label: "TOTAL STEPS", value: session.totalSteps, color: COLORS.yellow },
+                { label: "RED SCORE", value: session.finalRedScore, color: COLORS.red },
+                { label: "BLUE SCORE", value: session.finalBlueScore, color: COLORS.blue },
+              ].map(stat => (
+                <PixelBorder key={stat.label} style={{ padding: "10px", textAlign: "center" }}>
+                  <div style={{ color: COLORS.gray, fontSize: "8px", letterSpacing: "1px" }}>{stat.label}</div>
+                  <div style={{ color: stat.color, fontSize: "18px", marginTop: "4px" }}>{stat.value}</div>
+                </PixelBorder>
+              ))}
+            </div>
+
+            {/* Node final state */}
+            <PixelBorder style={{ padding: "10px" }}>
+              <div style={{ color: COLORS.gray, fontSize: "9px", letterSpacing: "2px", marginBottom: "8px" }}>
+                FINAL NODE STATE
+              </div>
+              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                {Object.entries(session.finalNodeState).map(([nodeId, wasComp]) => (
+                  <div key={nodeId} style={{
+                    border: `1px solid ${wasComp ? COLORS.red : COLORS.green}`,
+                    background: wasComp ? `${COLORS.red}15` : `${COLORS.green}15`,
+                    padding: "6px 12px", borderRadius: "2px",
+                  }}>
+                    <span style={{ color: wasComp ? COLORS.red : COLORS.green, fontSize: "10px" }}>
+                      {nodeId}: {wasComp ? "💀 COMPROMISED" : "✅ SAFE"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </PixelBorder>
+
+            {/* Full battle log */}
+            <PixelBorder style={{ padding: "10px", flex: 1, overflowY: "auto" }}>
+              <div style={{ color: COLORS.gray, fontSize: "9px", letterSpacing: "2px", marginBottom: "8px" }}>
+                FULL BATTLE LOG ({session.fullLog.length} EVENTS)
+              </div>
+              {session.fullLog.map((entry, i) => (
+                <div key={i} style={{
+                  color: i === 0 ? COLORS.white : COLORS.gray,
+                  fontSize: "9px", padding: "3px 0",
+                  borderBottom: `1px solid ${COLORS.border}`,
+                  fontFamily: PIXEL_FONT,
+                }}>
+                  {entry}
+                </div>
+              ))}
+            </PixelBorder>
+
+            {/* Export button */}
+            <motion.button
+              whileHover={{ scale: 1.02, boxShadow: `0 0 15px ${COLORS.green}` }}
+              onClick={() => {
+                const content = [
+                  `CYBER ARENA RL - SESSION LOG`,
+                  `================================`,
+                  `Session ID : ${session.sessionId}`,
+                  `Date       : ${formatTime(session.startTime)}`,
+                  `Winner     : ${session.winner} TEAM`,
+                  `Red Score  : ${session.finalRedScore}`,
+                  `Blue Score : ${session.finalBlueScore}`,
+                  `Steps      : ${session.totalSteps}`,
+                  ``,
+                  `FINAL NODE STATE`,
+                  `----------------`,
+                  ...Object.entries(session.finalNodeState).map(
+                    ([k, v]) => `${k}: ${v ? "COMPROMISED" : "SAFE"}`
+                  ),
+                  ``,
+                  `BATTLE LOG`,
+                  `----------`,
+                  ...session.fullLog,
+                ].join("\n");
+
+                const blob = new Blob([content], { type: "text/plain" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `${session.sessionId}.txt`;
+                a.click();
+                URL.revokeObjectURL(url);
+              }}
+              style={{
+                background: "transparent",
+                border: `2px solid ${COLORS.green}`,
+                color: COLORS.green, fontFamily: PIXEL_FONT,
+                fontSize: "12px", padding: "10px",
+                cursor: "pointer", letterSpacing: "2px", width: "100%",
+              }}
+            >
+              💾 EXPORT SESSION LOG AS .TXT
+            </motion.button>
+          </div>
+        ) : (
+          <PixelBorder style={{ padding: "20px", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <div style={{ color: COLORS.gray, fontSize: "12px" }}>Select a session to view details</div>
+          </PixelBorder>
+        )}
+      </div>
+    </motion.div>
+  );
+}
+
 export default function App() {
-  const [gameState, setGameState] = useState(initialState);
+  const [gameState, setGameState] = useState({
+    ...initialState,
+    sessionId: generateSessionId(),
+    startTime: Date.now(),
+  });
+  const [sessions, setSessions] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem("cyberArenaLogs") || "[]");
+    } catch { return []; }
+  });
+  const [showLogs, setShowLogs] = useState(false);
+  const [fullLog, setFullLog] = useState([]);
   const intervalRef = useRef(null);
+
+  const saveSession = (state, log) => {
+    const winner = state.redScore > state.blueScore ? "RED" : "BLUE";
+    const session = {
+      sessionId: state.sessionId,
+      startTime: state.startTime,
+      finalRedScore: state.redScore,
+      finalBlueScore: state.blueScore,
+      totalSteps: state.step,
+      winner,
+      finalNodeState: state.compromised,
+      fullLog: log,
+    };
+    const updated = [...sessions, session];
+    setSessions(updated);
+    try {
+      localStorage.setItem("cyberArenaLogs", JSON.stringify(updated));
+    } catch(e) {}
+  };
 
   const startGame = () => {
     setGameState(prev => ({ ...prev, isRunning: true }));
@@ -500,15 +723,27 @@ export default function App() {
 
   const resetGame = () => {
     clearInterval(intervalRef.current);
-    setGameState({ ...initialState });
+    setFullLog([]);
+    setGameState({
+      ...initialState,
+      sessionId: generateSessionId(),
+      startTime: Date.now(),
+    });
   };
 
   useEffect(() => {
     if (gameState.isRunning) {
       intervalRef.current = setInterval(() => {
         setGameState(prev => {
-          if (prev.step >= 200) return { ...prev, isRunning: false };
-          return runSimulationStep(prev);
+          if (prev.step >= 200) {
+            return { ...prev, isRunning: false };
+          }
+          const next = runSimulationStep(prev);
+          // Collect full log
+          if (next.battleLog[0] !== prev.battleLog[0]) {
+            setFullLog(fl => [next.battleLog[0], ...fl]);
+          }
+          return next;
         });
       }, gameState.speed);
     } else {
@@ -516,6 +751,13 @@ export default function App() {
     }
     return () => clearInterval(intervalRef.current);
   }, [gameState.isRunning, gameState.speed]);
+
+  // Auto-save when game ends
+  useEffect(() => {
+    if (!gameState.isRunning && gameState.step >= 200) {
+      saveSession(gameState, fullLog);
+    }
+  }, [gameState.isRunning, gameState.step]);
 
   return (
     <div style={{
@@ -542,10 +784,11 @@ export default function App() {
       </div>
 
       {/* Controls */}
-      <div style={{ display: "flex", gap: "8px", justifyContent: "center", marginBottom: "16px" }}>
+      <div style={{ display: "flex", gap: "8px", justifyContent: "center", marginBottom: "16px", flexWrap: "wrap" }}>
         {[
           { label: gameState.isRunning ? "⏸ PAUSE" : "▶ START", action: gameState.isRunning ? pauseGame : startGame, color: gameState.isRunning ? COLORS.yellow : COLORS.green },
           { label: "↺ RESET", action: resetGame, color: COLORS.orange },
+          { label: `📋 LOGS (${sessions.length})`, action: () => setShowLogs(true), color: COLORS.purple },
         ].map(btn => (
           <motion.button key={btn.label}
             whileHover={{ scale: 1.05, boxShadow: `0 0 15px ${btn.color}` }}
@@ -582,6 +825,15 @@ export default function App() {
         </div>
       </div>
 
+      {/* Session ID display */}
+      <div style={{ textAlign: "center", marginBottom: "12px" }}>
+        <span style={{ color: COLORS.gray, fontFamily: PIXEL_FONT, fontSize: "9px", letterSpacing: "2px" }}>
+          CURRENT SESSION: </span>
+        <span style={{ color: COLORS.green, fontFamily: PIXEL_FONT, fontSize: "9px" }}>
+          {gameState.sessionId}
+        </span>
+      </div>
+
       {/* Scoreboard */}
       <Scoreboard
         redScore={gameState.redScore}
@@ -594,10 +846,7 @@ export default function App() {
       {/* Main Layout */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: "12px" }}>
 
-        {/* Left: Network + Actions */}
         <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-
-          {/* Network Graph */}
           <PixelBorder style={{ padding: "10px", height: "380px" }}>
             <div style={{ color: COLORS.gray, fontFamily: PIXEL_FONT, fontSize: "9px", marginBottom: "6px", letterSpacing: "2px" }}>
               ► NETWORK MAP — ATTACKER @ {gameState.attackerPosition}
@@ -605,7 +854,6 @@ export default function App() {
             <NetworkGraph gameState={gameState} />
           </PixelBorder>
 
-          {/* Current Actions */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
             <PixelBorder color={COLORS.red} style={{ padding: "10px" }}>
               <div style={{ color: COLORS.red, fontFamily: PIXEL_FONT, fontSize: "9px", marginBottom: "8px", letterSpacing: "2px" }}>
@@ -626,7 +874,6 @@ export default function App() {
             </PixelBorder>
           </div>
 
-          {/* All possible actions */}
           <PixelBorder style={{ padding: "10px" }}>
             <div style={{ color: COLORS.gray, fontFamily: PIXEL_FONT, fontSize: "9px", marginBottom: "8px", letterSpacing: "2px" }}>
               ◄ RED TEAM ARSENAL
@@ -652,7 +899,6 @@ export default function App() {
           </PixelBorder>
         </div>
 
-        {/* Right Panel */}
         <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
           <NodeStatusGrid
             compromised={gameState.compromised}
@@ -694,19 +940,36 @@ export default function App() {
               <div style={{ color: COLORS.gray, fontFamily: PIXEL_FONT, fontSize: "12px", margin: "16px 0" }}>
                 RED: {gameState.redScore} pts | BLUE: {gameState.blueScore} pts
               </div>
-              <motion.button
-                whileHover={{ scale: 1.05 }}
-                onClick={resetGame}
-                style={{
-                  background: "transparent",
-                  border: `2px solid ${COLORS.green}`,
-                  color: COLORS.green, fontFamily: PIXEL_FONT,
-                  fontSize: "14px", padding: "10px 24px",
-                  cursor: "pointer", letterSpacing: "2px",
-                }}
-              >▶ PLAY AGAIN</motion.button>
+              <div style={{ color: COLORS.green, fontFamily: PIXEL_FONT, fontSize: "10px", marginBottom: "16px" }}>
+                ✅ Session auto-saved to logs
+              </div>
+              <div style={{ display: "flex", gap: "12px", justifyContent: "center" }}>
+                <motion.button whileHover={{ scale: 1.05 }} onClick={resetGame}
+                  style={{
+                    background: "transparent", border: `2px solid ${COLORS.green}`,
+                    color: COLORS.green, fontFamily: PIXEL_FONT,
+                    fontSize: "14px", padding: "10px 24px",
+                    cursor: "pointer", letterSpacing: "2px",
+                  }}
+                >▶ PLAY AGAIN</motion.button>
+                <motion.button whileHover={{ scale: 1.05 }} onClick={() => { resetGame(); setShowLogs(true); }}
+                  style={{
+                    background: "transparent", border: `2px solid ${COLORS.purple}`,
+                    color: COLORS.purple, fontFamily: PIXEL_FONT,
+                    fontSize: "14px", padding: "10px 24px",
+                    cursor: "pointer", letterSpacing: "2px",
+                  }}
+                >📋 VIEW LOGS</motion.button>
+              </div>
             </PixelBorder>
           </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Log Viewer */}
+      <AnimatePresence>
+        {showLogs && (
+          <LogViewer sessions={sessions} onClose={() => setShowLogs(false)} />
         )}
       </AnimatePresence>
     </div>
