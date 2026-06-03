@@ -1,6 +1,6 @@
 {
-  "short_name": "React App",
-  "name": "Create React App Sample",
+  "short_name": "CyberArena",
+  "name": "CyberArena RL - AI Cyber Battle Simulator",
   "icons": [
     {
       "src": "favicon.ico",
