@@ -82,7 +82,6 @@ function runSimulationStep(gameState) {
   let event = null;
 
   const currentNodeId = newState.attackerPosition;
-  const nodeIdx = NODES.findIndex(n => n.id === currentNodeId);
 
   // Attacker logic
   if (attackId === 6) {
@@ -753,6 +752,7 @@ export default function App() {
   }, [gameState.isRunning, gameState.speed]);
 
   // Auto-save when game ends
+  // eslint-disable-next-line react-hooks/exhaustive-deps
 useEffect(() => {
   if (!gameState.isRunning && gameState.step >= 200) {
     saveSession(gameState, fullLog);
