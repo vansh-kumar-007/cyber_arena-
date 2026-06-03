@@ -8,7 +8,12 @@
 #   4 = Stay idle
 
 from agents.q_learning import QLearningAgent
+from configs.network_config import ATTACK_TYPES
+
 
 class AttackerAgent(QLearningAgent):
     def __init__(self):
-        super().__init__(n_actions=5, name="Attacker")
+        super().__init__(
+            n_actions=len(ATTACK_TYPES),
+            name="Attacker"
+        )
