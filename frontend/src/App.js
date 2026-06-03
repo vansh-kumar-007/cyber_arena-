@@ -1101,6 +1101,7 @@ useEffect(() => {
           />
           <BattleLog logs={gameState.battleLog} />
         </div>
+      </div>
 
       {/* Game Over */}
       <AnimatePresence>
