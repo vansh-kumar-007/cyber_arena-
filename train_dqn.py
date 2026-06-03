@@ -9,29 +9,36 @@ from agents.dqn_attacker import DQNAttacker
 from agents.dqn_defender import DQNDefender
 from utils.metrics import Metrics
 
-def train_dqn(num_episodes=1000, save_models=True):
+def train_dqn(num_episodes=2000, save_models=True):
     print("=" * 55)
     print("   CyberArena RL — DQN Training")
     print("   Neural Network Mode (PyTorch)")
     print("=" * 55)
 
-    # Initialize environment
     env = NetworkEnvironment()
-
-    # Get state size from a sample reset
     sample_state = env.reset()
     state_size = len(sample_state)
     print(f"\nState size: {state_size}")
     print(f"Action size: 12 (each agent)")
 
-    # Initialize DQN agents
     attacker = DQNAttacker(state_size=state_size)
     defender = DQNDefender(state_size=state_size)
+
+    # ── KEY FIX: tune agent hyperparameters ──
+    attacker.gamma = 0.95
+    attacker.learning_rate = 0.0005
+    attacker.optimizer = __import__('torch').optim.Adam(
+        attacker.online_net.parameters(), lr=attacker.learning_rate)
+    attacker.target_update_freq = 5
+
+    defender.gamma = 0.95
+    defender.learning_rate = 0.0005
+    defender.optimizer = __import__('torch').optim.Adam(
+        defender.online_net.parameters(), lr=defender.learning_rate)
+    defender.target_update_freq = 5
+
     metrics = Metrics()
-
-    print(f"\nAttacker network: {attacker.online_net}")
     print(f"\nTraining for {num_episodes} episodes...\n")
-
     best_attacker_reward = float('-inf')
 
     for episode in range(1, num_episodes + 1):
@@ -54,6 +61,9 @@ def train_dqn(num_episodes=1000, save_models=True):
             next_state, att_reward, def_reward, done = env.step(
                 att_action, def_action
             )
+            # Normalize rewards to similar scale — critical for DQN stability
+            att_reward = np.clip(att_reward / 50.0, -2.0, 2.0)
+            def_reward = np.clip(def_reward / 50.0, -2.0, 2.0)
 
             # Store experiences
             attacker.remember(state, att_action, att_reward, next_state,
