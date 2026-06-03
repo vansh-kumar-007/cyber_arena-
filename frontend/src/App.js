@@ -1025,6 +1025,12 @@ export default function App() {
           CYBER ARENA RL — MULTI-AGENT RL SIMULATION
         </div>
       </div>
+      {/* Log Viewer */}
+      <AnimatePresence>
+        {showLogs && (
+          <LogViewer sessions={sessions} onClose={() => setShowLogs(false)} />
+        )}
+      </AnimatePresence>
     </div>
   );
 }
