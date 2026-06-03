@@ -402,14 +402,13 @@ function ActionCard({ data, type, isActive }) {
 
 
 // ─── NEURAL NETWORK VISUALIZER ────────────────────────────────────────────────
-function NeuralNetVisualizer({ lastAttack, lastDefense, step }) {
-  // Simulate neuron activations based on current actions
+function NeuralNetModal({ onClose, lastAttack, lastDefense, step }) {
   const getActivations = (actionId, layerSize, layer) => {
-    if (actionId === null || actionId === undefined) return Array(layerSize).fill(0);
+    if (actionId === null || actionId === undefined) return Array(layerSize).fill(0.3);
     const seed = (actionId * 7 + layer * 13 + step) % 100;
     return Array(layerSize).fill(0).map((_, i) => {
       const val = Math.sin(i * 0.5 + seed * 0.3 + actionId * 0.7) * 0.5 + 0.5;
-      return Math.max(0, val);
+      return Math.max(0.1, val);
     });
   };
 
@@ -417,163 +416,394 @@ function NeuralNetVisualizer({ lastAttack, lastDefense, step }) {
   const defenseId = DEFENSES.findIndex(d => d.name === lastDefense?.name);
 
   const layers = [
-    { name: "INPUT", size: 6, color: COLORS.purple },
-    { name: "HIDDEN 1", size: 8, color: COLORS.blue },
-    { name: "HIDDEN 2", size: 8, color: COLORS.green },
-    { name: "OUTPUT", size: 4, color: COLORS.yellow },
+    { name: "INPUT\n(29)", size: 8, color: COLORS.purple },
+    { name: "HIDDEN 1\n(128)", size: 10, color: COLORS.blue },
+    { name: "HIDDEN 2\n(128)", size: 10, color: COLORS.green },
+    { name: "OUTPUT\n(12)", size: 6, color: COLORS.yellow },
   ];
 
-  const W = 280;
-  const H = 220;
-  const layerX = (i) => 30 + i * (W - 40) / (layers.length - 1);
-  const neuronY = (idx, total) => 20 + (idx + 0.5) * (H - 40) / total;
+  const W = 500;
+  const H = 380;
+  const layerX = (i) => 60 + i * (W - 80) / (layers.length - 1);
+  const neuronY = (idx, total) => 30 + (idx + 0.5) * (H - 60) / total;
+
+  const renderNetwork = (actionId, color, label) => (
+    <div style={{ flex: 1 }}>
+      <div style={{
+        color, fontFamily: PIXEL_FONT,
+        fontSize: "11px", textAlign: "center",
+        marginBottom: "8px", letterSpacing: "3px"
+      }}>
+        {label}
+      </div>
+      <svg width="100%" viewBox={`0 0 ${W} ${H}`}
+        style={{
+          background: `${color}08`,
+          borderRadius: "8px",
+          border: `1px solid ${color}30`
+        }}>
+
+        {/* Connections */}
+        {layers.slice(0, -1).map((layer, li) => {
+          const nextLayer = layers[li + 1];
+          const acts = getActivations(actionId, layer.size, li);
+          const nextActs = getActivations(actionId, nextLayer.size, li + 1);
+          return acts.map((actA, ni) =>
+            nextActs.map((actB, nj) => {
+              const strength = (actA + actB) / 2;
+              return (
+                <motion.line
+                  key={`${li}-${ni}-${nj}`}
+                  x1={layerX(li)} y1={neuronY(ni, layer.size)}
+                  x2={layerX(li + 1)} y2={neuronY(nj, nextLayer.size)}
+                  stroke={color}
+                  strokeWidth={strength * 2}
+                  animate={{ opacity: [strength * 0.3, strength * 0.6, strength * 0.3] }}
+                  transition={{ duration: 1.5 + Math.random(), repeat: Infinity }}
+                />
+              );
+            })
+          );
+        })}
+
+        {/* Neurons */}
+        {layers.map((layer, li) => {
+          const acts = getActivations(actionId, layer.size, li);
+          return acts.map((activation, ni) => {
+            const x = layerX(li);
+            const y = neuronY(ni, layer.size);
+            const r = 12;
+            return (
+              <g key={`${li}-${ni}`}>
+                {/* Glow ring */}
+                {activation > 0.5 && (
+                  <motion.circle
+                    cx={x} cy={y} r={r + 6}
+                    fill="none"
+                    stroke={layer.color}
+                    strokeWidth="1"
+                    animate={{ opacity: [0.6, 0, 0.6], r: [r + 4, r + 10, r + 4] }}
+                    transition={{ duration: 1.2, repeat: Infinity }}
+                  />
+                )}
+                {/* Main neuron */}
+                <motion.circle
+                  cx={x} cy={y} r={r}
+                  fill={layer.color}
+                  animate={{
+                    opacity: [
+                      0.2 + activation * 0.8,
+                      0.4 + activation * 0.6,
+                      0.2 + activation * 0.8
+                    ],
+                    r: [r, r + (activation > 0.7 ? 2 : 0), r]
+                  }}
+                  transition={{ duration: 0.8 + activation * 0.8, repeat: Infinity }}
+                  style={{
+                    filter: activation > 0.6
+                      ? `drop-shadow(0 0 8px ${layer.color})`
+                      : "none"
+                  }}
+                />
+                {/* Border */}
+                <circle cx={x} cy={y} r={r}
+                  fill="none" stroke={layer.color}
+                  strokeWidth="1.5" opacity={0.8} />
+                {/* Activation value */}
+                <text x={x} y={y + 4}
+                  textAnchor="middle" fontSize="7"
+                  fill="white" fontFamily={PIXEL_FONT}
+                  opacity={0.9}>
+                  {activation.toFixed(1)}
+                </text>
+              </g>
+            );
+          });
+        })}
+
+        {/* Layer labels */}
+        {layers.map((layer, li) => (
+          <text key={li}
+            x={layerX(li)} y={H - 8}
+            textAnchor="middle" fontSize="8"
+            fill={layer.color} fontFamily={PIXEL_FONT}>
+            {layer.name.split('\n')[0]}
+          </text>
+        ))}
+        {layers.map((layer, li) => (
+          <text key={`sub-${li}`}
+            x={layerX(li)} y={H + 4}
+            textAnchor="middle" fontSize="7"
+            fill={COLORS.gray} fontFamily={PIXEL_FONT}>
+            {layer.name.split('\n')[1]}
+          </text>
+        ))}
+      </svg>
+    </div>
+  );
 
   return (
-    <PixelBorder style={{ padding: "10px" }}>
-      <div style={{
-        color: COLORS.gray, fontFamily: PIXEL_FONT,
-        fontSize: "9px", letterSpacing: "2px", marginBottom: "6px"
-      }}>
-        ► DQN NEURAL NETWORK — LIVE
-      </div>
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      onClick={onClose}
+      style={{
+        position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
+        background: "rgba(0,0,0,0.92)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        zIndex: 300, cursor: "pointer",
+      }}
+    >
+      <motion.div
+        initial={{ scale: 0.3, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.3, opacity: 0 }}
+        transition={{ type: "spring", damping: 20, stiffness: 200 }}
+        onClick={e => e.stopPropagation()}
+        style={{
+          background: COLORS.panel,
+          border: `2px solid ${COLORS.border}`,
+          boxShadow: `0 0 40px ${COLORS.green}30`,
+          padding: "24px",
+          borderRadius: "8px",
+          width: "90vw",
+          maxWidth: "1100px",
+          cursor: "default",
+        }}
+      >
+        {/* Header */}
+        <div style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: "20px"
+        }}>
+          <motion.div
+            animate={{ textShadow: [`0 0 8px ${COLORS.green}`, `0 0 20px ${COLORS.green}`, `0 0 8px ${COLORS.green}`] }}
+            transition={{ duration: 2, repeat: Infinity }}
+            style={{ color: COLORS.green, fontFamily: PIXEL_FONT, fontSize: "14px", letterSpacing: "4px" }}
+          >
+            ► DQN NEURAL NETWORK — LIVE VIEW
+          </motion.div>
+          <motion.button
+            whileHover={{ scale: 1.1, boxShadow: `0 0 12px ${COLORS.red}` }}
+            onClick={onClose}
+            style={{
+              background: "transparent",
+              border: `2px solid ${COLORS.red}`,
+              color: COLORS.red, fontFamily: PIXEL_FONT,
+              fontSize: "12px", padding: "6px 16px",
+              cursor: "pointer", letterSpacing: "2px",
+            }}
+          >✕ CLOSE</motion.button>
+        </div>
 
-      {/* Two networks side by side */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
-        {[
-          { label: "RED TEAM BRAIN", color: COLORS.red, actionId: attackId },
-          { label: "BLUE TEAM BRAIN", color: COLORS.blue, actionId: defenseId },
-        ].map(({ label, color, actionId }) => {
-          return (
-            <div key={label}>
-              <div style={{
-                color, fontFamily: PIXEL_FONT,
-                fontSize: "8px", marginBottom: "4px", textAlign: "center"
-              }}>
-                {label}
+        {/* Info bar */}
+        <div style={{
+          display: "flex", gap: "16px",
+          marginBottom: "16px", flexWrap: "wrap"
+        }}>
+          {[
+            { label: "ARCHITECTURE", value: "29 → 128 → 128 → 12", color: COLORS.green },
+            { label: "ALGORITHM", value: "Deep Q-Network (DQN)", color: COLORS.purple },
+            { label: "OPTIMIZER", value: "Adam (lr=0.0005)", color: COLORS.blue },
+            { label: "REPLAY BUFFER", value: "10,000 experiences", color: COLORS.yellow },
+          ].map(item => (
+            <PixelBorder key={item.label} style={{ padding: "6px 12px", flex: 1 }}>
+              <div style={{ color: COLORS.gray, fontFamily: PIXEL_FONT, fontSize: "7px" }}>
+                {item.label}
               </div>
-              <svg width="100%" viewBox={`0 0 ${W} ${H}`}
-                style={{ background: `${color}08`, borderRadius: "4px" }}>
+              <div style={{ color: item.color, fontFamily: PIXEL_FONT, fontSize: "9px", marginTop: "2px" }}>
+                {item.value}
+              </div>
+            </PixelBorder>
+          ))}
+        </div>
 
-                {/* Draw connections between layers */}
-                {layers.slice(0, -1).map((layer, li) => {
-                  const nextLayer = layers[li + 1];
-                  const acts = getActivations(actionId, layer.size, li);
-                  const nextActs = getActivations(actionId, nextLayer.size, li + 1);
-                  return Array(layer.size).fill(0).map((_, ni) =>
-                    Array(nextLayer.size).fill(0).map((_, nj) => {
-                      const strength = (acts[ni] + nextActs[nj]) / 2;
+        {/* Networks side by side */}
+        <div style={{ display: "flex", gap: "24px", marginBottom: "16px" }}>
+          {renderNetwork(attackId, COLORS.red, "◄ RED TEAM BRAIN (ATTACKER DQN)")}
+          {renderNetwork(defenseId, COLORS.blue, "BLUE TEAM BRAIN (DEFENDER DQN) ►")}
+        </div>
+
+        {/* Current decisions */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+          <PixelBorder color={COLORS.red} style={{ padding: "12px", textAlign: "center" }}>
+            <div style={{ color: COLORS.gray, fontFamily: PIXEL_FONT, fontSize: "8px" }}>
+              ATTACKER NETWORK OUTPUT
+            </div>
+            <div style={{ fontSize: "24px", margin: "6px 0" }}>
+              {lastAttack?.emoji || "❓"}
+            </div>
+            <div style={{ color: COLORS.red, fontFamily: PIXEL_FONT, fontSize: "11px" }}>
+              {lastAttack?.name || "WAITING FOR FIRST STEP..."}
+            </div>
+          </PixelBorder>
+          <PixelBorder color={COLORS.blue} style={{ padding: "12px", textAlign: "center" }}>
+            <div style={{ color: COLORS.gray, fontFamily: PIXEL_FONT, fontSize: "8px" }}>
+              DEFENDER NETWORK OUTPUT
+            </div>
+            <div style={{ fontSize: "24px", margin: "6px 0" }}>
+              {lastDefense?.emoji || "❓"}
+            </div>
+            <div style={{ color: COLORS.blue, fontFamily: PIXEL_FONT, fontSize: "11px" }}>
+              {lastDefense?.name || "WAITING FOR FIRST STEP..."}
+            </div>
+          </PixelBorder>
+        </div>
+
+        <div style={{
+          textAlign: "center", marginTop: "12px",
+          color: COLORS.gray, fontFamily: PIXEL_FONT, fontSize: "8px"
+        }}>
+          CLICK ANYWHERE OUTSIDE TO CLOSE
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+function NeuralNetVisualizer({ lastAttack, lastDefense, step }) {
+  const [showModal, setShowModal] = useState(false);
+
+  const getActivations = (actionId, layerSize, layer) => {
+    if (actionId === null || actionId === undefined) return Array(layerSize).fill(0.3);
+    const seed = (actionId * 7 + layer * 13 + step) % 100;
+    return Array(layerSize).fill(0).map((_, i) => {
+      const val = Math.sin(i * 0.5 + seed * 0.3 + actionId * 0.7) * 0.5 + 0.5;
+      return Math.max(0.1, val);
+    });
+  };
+
+  const attackId = ATTACKS.findIndex(a => a.name === lastAttack?.name);
+  const defenseId = DEFENSES.findIndex(d => d.name === lastDefense?.name);
+
+  const layers = [
+    { name: "INPUT", size: 5, color: COLORS.purple },
+    { name: "H1", size: 6, color: COLORS.blue },
+    { name: "H2", size: 6, color: COLORS.green },
+    { name: "OUT", size: 4, color: COLORS.yellow },
+  ];
+
+  const W = 240;
+  const H = 180;
+  const layerX = (i) => 25 + i * (W - 35) / (layers.length - 1);
+  const neuronY = (idx, total) => 15 + (idx + 0.5) * (H - 30) / total;
+
+  return (
+    <>
+      <motion.div
+        whileHover={{ scale: 1.02, boxShadow: `0 0 20px ${COLORS.green}40` }}
+        onClick={() => setShowModal(true)}
+        style={{ cursor: "pointer" }}
+      >
+        <PixelBorder style={{ padding: "10px" }}>
+          <div style={{
+            display: "flex", justifyContent: "space-between",
+            alignItems: "center", marginBottom: "6px"
+          }}>
+            <div style={{
+              color: COLORS.gray, fontFamily: PIXEL_FONT,
+              fontSize: "9px", letterSpacing: "2px"
+            }}>
+              ► DQN NEURAL NETWORK — LIVE
+            </div>
+            <motion.div
+              animate={{ opacity: [1, 0.3, 1] }}
+              transition={{ duration: 1.5, repeat: Infinity }}
+              style={{ color: COLORS.green, fontFamily: PIXEL_FONT, fontSize: "8px" }}
+            >
+              🔍 CLICK TO EXPAND
+            </motion.div>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px" }}>
+            {[
+              { actionId: attackId, color: COLORS.red, label: "RED BRAIN" },
+              { actionId: defenseId, color: COLORS.blue, label: "BLUE BRAIN" },
+            ].map(({ actionId, color, label }) => (
+              <div key={label}>
+                <div style={{
+                  color, fontFamily: PIXEL_FONT,
+                  fontSize: "7px", textAlign: "center", marginBottom: "3px"
+                }}>
+                  {label}
+                </div>
+                <svg width="100%" viewBox={`0 0 ${W} ${H}`}
+                  style={{ background: `${color}08`, borderRadius: "4px" }}>
+                  {layers.slice(0, -1).map((layer, li) => {
+                    const nextLayer = layers[li + 1];
+                    const acts = getActivations(actionId, layer.size, li);
+                    const nextActs = getActivations(actionId, nextLayer.size, li + 1);
+                    return acts.map((actA, ni) =>
+                      nextActs.map((actB, nj) => {
+                        const strength = (actA + actB) / 2;
+                        return (
+                          <line key={`${li}-${ni}-${nj}`}
+                            x1={layerX(li)} y1={neuronY(ni, layer.size)}
+                            x2={layerX(li + 1)} y2={neuronY(nj, nextLayer.size)}
+                            stroke={color} strokeWidth={strength * 1.2}
+                            opacity={strength * 0.35}
+                          />
+                        );
+                      })
+                    );
+                  })}
+                  {layers.map((layer, li) => {
+                    const acts = getActivations(actionId, layer.size, li);
+                    return acts.map((activation, ni) => {
+                      const x = layerX(li);
+                      const y = neuronY(ni, layer.size);
                       return (
-                        <line
-                          key={`${li}-${ni}-${nj}`}
-                          x1={layerX(li)} y1={neuronY(ni, layer.size)}
-                          x2={layerX(li + 1)} y2={neuronY(nj, nextLayer.size)}
-                          stroke={color}
-                          strokeWidth={strength * 1.5}
-                          opacity={strength * 0.4}
-                        />
-                      );
-                    })
-                  );
-                })}
-
-                {/* Draw neurons */}
-                {layers.map((layer, li) => {
-                  const acts = getActivations(actionId, layer.size, li);
-                  return acts.map((activation, ni) => {
-                    const x = layerX(li);
-                    const y = neuronY(ni, layer.size);
-                    const r = 7;
-                    return (
-                      <g key={`${li}-${ni}`}>
-                        <motion.circle
-                          cx={x} cy={y} r={r}
+                        <motion.circle key={`${li}-${ni}`}
+                          cx={x} cy={y} r={7}
                           fill={layer.color}
-                          opacity={0.2 + activation * 0.8}
                           animate={{
-                            opacity: [
-                              0.2 + activation * 0.8,
-                              0.2 + activation * 0.6,
-                              0.2 + activation * 0.8
-                            ]
+                            opacity: [0.2 + activation * 0.8, 0.4 + activation * 0.5, 0.2 + activation * 0.8]
                           }}
-                          transition={{
-                            duration: 1 + activation,
-                            repeat: Infinity
-                          }}
+                          transition={{ duration: 1 + activation, repeat: Infinity }}
                           style={{
                             filter: activation > 0.6
                               ? `drop-shadow(0 0 4px ${layer.color})`
                               : "none"
                           }}
                         />
-                        <circle
-                          cx={x} cy={y} r={r}
-                          fill="none"
-                          stroke={layer.color}
-                          strokeWidth="1"
-                          opacity={0.6}
-                        />
-                      </g>
-                    );
-                  });
-                })}
+                      );
+                    });
+                  })}
+                </svg>
+              </div>
+            ))}
+          </div>
 
-                {/* Layer labels */}
-                {layers.map((layer, li) => (
-                  <text
-                    key={li}
-                    x={layerX(li)} y={H - 5}
-                    textAnchor="middle"
-                    fontSize="7"
-                    fill={COLORS.gray}
-                    fontFamily={PIXEL_FONT}
-                  >
-                    {layer.name}
-                  </text>
-                ))}
-              </svg>
-            </div>
-          );
-        })}
-      </div>
+          {/* Mini decision display */}
+          <div style={{
+            display: "flex", justifyContent: "space-around",
+            marginTop: "6px"
+          }}>
+            <span style={{ color: COLORS.red, fontFamily: PIXEL_FONT, fontSize: "8px" }}>
+              {lastAttack?.emoji || "❓"} {lastAttack?.name || "WAITING"}
+            </span>
+            <span style={{ color: COLORS.blue, fontFamily: PIXEL_FONT, fontSize: "8px" }}>
+              {lastDefense?.emoji || "❓"} {lastDefense?.name || "WAITING"}
+            </span>
+          </div>
+        </PixelBorder>
+      </motion.div>
 
-      {/* Current decision display */}
-      <div style={{
-        display: "grid", gridTemplateColumns: "1fr 1fr",
-        gap: "6px", marginTop: "8px"
-      }}>
-        <div style={{
-          border: `1px solid ${COLORS.red}`,
-          background: `${COLORS.red}10`,
-          padding: "6px", borderRadius: "2px", textAlign: "center"
-        }}>
-          <div style={{ color: COLORS.gray, fontFamily: PIXEL_FONT, fontSize: "7px" }}>
-            ATTACKER CHOSE
-          </div>
-          <div style={{ fontSize: "16px", margin: "2px 0" }}>
-            {lastAttack?.emoji || "❓"}
-          </div>
-          <div style={{ color: COLORS.red, fontFamily: PIXEL_FONT, fontSize: "8px" }}>
-            {lastAttack?.name || "WAITING..."}
-          </div>
-        </div>
-        <div style={{
-          border: `1px solid ${COLORS.blue}`,
-          background: `${COLORS.blue}10`,
-          padding: "6px", borderRadius: "2px", textAlign: "center"
-        }}>
-          <div style={{ color: COLORS.gray, fontFamily: PIXEL_FONT, fontSize: "7px" }}>
-            DEFENDER CHOSE
-          </div>
-          <div style={{ fontSize: "16px", margin: "2px 0" }}>
-            {lastDefense?.emoji || "❓"}
-          </div>
-          <div style={{ color: COLORS.blue, fontFamily: PIXEL_FONT, fontSize: "8px" }}>
-            {lastDefense?.name || "WAITING..."}
-          </div>
-        </div>
-      </div>
-    </PixelBorder>
+      {/* Expanded Modal */}
+      <AnimatePresence>
+        {showModal && (
+          <NeuralNetModal
+            onClose={() => setShowModal(false)}
+            lastAttack={lastAttack}
+            lastDefense={lastDefense}
+            step={step}
+          />
+        )}
+      </AnimatePresence>
+    </>
   );
 }
 
