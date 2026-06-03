@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 
 // ─── PIXEL ART STYLES ─────────────────────────────────────────────────────────
@@ -693,24 +693,31 @@ export default function App() {
   const [fullLog, setFullLog] = useState([]);
   const intervalRef = useRef(null);
 
-  const saveSession = (state, log) => {
-    const winner = state.redScore > state.blueScore ? "RED" : "BLUE";
-    const session = {
-      sessionId: state.sessionId,
-      startTime: state.startTime,
-      finalRedScore: state.redScore,
-      finalBlueScore: state.blueScore,
-      totalSteps: state.step,
-      winner,
-      finalNodeState: state.compromised,
-      fullLog: log,
-    };
-    const updated = [...sessions, session];
-    setSessions(updated);
-    try {
-      localStorage.setItem("cyberArenaLogs", JSON.stringify(updated));
-    } catch(e) {}
+const saveSession = useCallback((state, log) => {
+  const winner = state.redScore > state.blueScore ? "RED" : "BLUE";
+
+  const session = {
+    sessionId: state.sessionId,
+    startTime: state.startTime,
+    finalRedScore: state.redScore,
+    finalBlueScore: state.blueScore,
+    totalSteps: state.step,
+    winner,
+    finalNodeState: state.compromised,
+    fullLog: log,
   };
+
+  const updated = [...sessions, session];
+
+  setSessions(updated);
+
+  try {
+    localStorage.setItem(
+      "cyberArenaLogs",
+      JSON.stringify(updated)
+    );
+  } catch (e) {}
+}, [sessions]);
 
   const startGame = () => {
     setGameState(prev => ({ ...prev, isRunning: true }));
@@ -751,13 +758,13 @@ export default function App() {
     return () => clearInterval(intervalRef.current);
   }, [gameState.isRunning, gameState.speed]);
 
-  // Auto-save when game ends
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+// Auto-save when game ends
 useEffect(() => {
   if (!gameState.isRunning && gameState.step >= 200) {
     saveSession(gameState, fullLog);
   }
-}, [gameState.isRunning, gameState.step, gameState, fullLog, saveSession]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [gameState.isRunning, gameState.step]);
 
   return (
     <div style={{
