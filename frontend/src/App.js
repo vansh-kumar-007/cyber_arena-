@@ -2,8 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 
 // ─── API CONFIG ───────────────────────────────────────────────────────────────
-const API_URL = "http://localhost:8000";
-
+const API_URL = process.env.REACT_APP_API_URL || "http://localhost:8000";
 async function apiCall(endpoint, method = "GET") {
   try {
     const res = await fetch(`${API_URL}${endpoint}`, { method });
