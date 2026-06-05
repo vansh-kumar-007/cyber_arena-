@@ -44,28 +44,62 @@ class QNetwork(nn.Module):
 
 class ReplayBuffer:
     """
-    Stores past experiences (state, action, reward, next_state, done).
-    During training we sample RANDOM batches from this buffer.
-
-    Why random? To break correlation between consecutive experiences
-    which would make training unstable.
+    Prioritized Experience Replay Buffer.
+    Experiences with higher TD error are sampled more frequently.
+    This means the agent learns faster from its biggest mistakes.
     """
-    def __init__(self, capacity=10000):
-        self.buffer = deque(maxlen=capacity)
+    def __init__(self, capacity=10000, alpha=0.6, beta=0.4):
+        self.capacity = capacity
+        self.alpha = alpha      # Priority exponent (0=uniform, 1=full priority)
+        self.beta = beta        # Importance sampling correction
+        self.beta_increment = 0.001
+        self.buffer = []
+        self.priorities = []
+        self.pos = 0
 
     def push(self, state, action, reward, next_state, done):
-        self.buffer.append((state, action, reward, next_state, done))
+        # New experiences get max priority so they're sampled at least once
+        max_priority = max(self.priorities) if self.priorities else 1.0
+
+        if len(self.buffer) < self.capacity:
+            self.buffer.append((state, action, reward, next_state, done))
+            self.priorities.append(max_priority)
+        else:
+            self.buffer[self.pos] = (state, action, reward, next_state, done)
+            self.priorities[self.pos] = max_priority
+            self.pos = (self.pos + 1) % self.capacity
 
     def sample(self, batch_size):
-        batch = random.sample(self.buffer, batch_size)
-        states, actions, rewards, next_states, dones = zip(*batch)
+        # Convert priorities to probabilities
+        priorities = np.array(self.priorities)
+        probs = priorities ** self.alpha
+        probs /= probs.sum()
+
+        # Sample based on priority probabilities
+        indices = np.random.choice(len(self.buffer), batch_size, p=probs)
+        samples = [self.buffer[i] for i in indices]
+
+        # Importance sampling weights to correct for bias
+        total = len(self.buffer)
+        weights = (total * probs[indices]) ** (-self.beta)
+        weights /= weights.max()
+        self.beta = min(1.0, self.beta + self.beta_increment)
+
+        states, actions, rewards, next_states, dones = zip(*samples)
         return (
             torch.FloatTensor(states),
             torch.LongTensor(actions),
             torch.FloatTensor(rewards),
             torch.FloatTensor(next_states),
-            torch.FloatTensor(dones)
+            torch.FloatTensor(dones),
+            indices,
+            torch.FloatTensor(weights)
         )
+
+    def update_priorities(self, indices, td_errors):
+        """Update priorities based on TD errors after learning"""
+        for idx, error in zip(indices, td_errors):
+            self.priorities[idx] = abs(error) + 1e-6  # Small epsilon prevents 0 priority
 
     def __len__(self):
         return len(self.buffer)
@@ -114,7 +148,7 @@ class DQNAgent:
         self.use_double_dqn = True   # Double DQN enabled
 
         # Replay buffer
-        self.memory = ReplayBuffer(capacity=10000)
+        self.memory = ReplayBuffer(capacity=10000, alpha=0.6, beta=0.4)
 
         # Tracking
         self.episode_reward = 0
@@ -141,42 +175,38 @@ class DQNAgent:
 
     def learn(self):
         """
-        Sample a random batch from memory and train the network.
-        This is the core DQN update.
+        Double DQN + Prioritized Experience Replay learning step.
         """
         if len(self.memory) < self.batch_size:
-            return None  # Not enough experiences yet
+            return None
 
-        # Sample random batch
-        states, actions, rewards, next_states, dones = \
-            self.memory.sample(self.batch_size)
+        # Sample with priorities
+        result = self.memory.sample(self.batch_size)
+        states, actions, rewards, next_states, dones, indices, weights = result
 
-        # Current Q-values from online network
+        # Current Q-values
         current_q = self.online_net(states).gather(
             1, actions.unsqueeze(1)
         ).squeeze(1)
 
-        # Double DQN — decouple action selection from evaluation
-        # Step 1: online network selects the best action
-        # Step 2: target network evaluates that action
-        # This prevents overestimation of Q-values
+        # Double DQN target
         with torch.no_grad():
-            # Online net picks best action for next state
             best_actions = self.online_net(next_states).argmax(1).unsqueeze(1)
-            # Target net evaluates that specific action
             next_q = self.target_net(next_states).gather(1, best_actions).squeeze(1)
             target_q = rewards + self.gamma * next_q * (1 - dones)
 
-        # Compute loss and backpropagate
-        loss = self.criterion(current_q, target_q)
+        # TD errors for priority update
+        td_errors = (target_q - current_q).detach().numpy()
+        self.memory.update_priorities(indices, td_errors)
+
+        # Weighted loss — important experiences contribute more
+        loss = (weights * (current_q - target_q) ** 2).mean()
+
         self.optimizer.zero_grad()
         loss.backward()
-
-        # Gradient clipping — prevents exploding gradients
         torch.nn.utils.clip_grad_norm_(
             self.online_net.parameters(), max_norm=1.0
         )
-
         self.optimizer.step()
         self.losses.append(loss.item())
         return loss.item()
@@ -200,7 +230,7 @@ class DQNAgent:
             "memory_size": len(self.memory),
             "episode_reward": round(self.episode_reward, 2),
             "avg_loss": round(avg_loss, 4),
-            "mode": "Double DQN" if self.use_double_dqn else "DQN",
+            "mode": "Double DQN + PER",
         }
 
     def get_network_weights(self):
