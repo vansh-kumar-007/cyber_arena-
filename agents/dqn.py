@@ -111,6 +111,7 @@ class DQNAgent:
 
         # Loss function
         self.criterion = nn.MSELoss()
+        self.use_double_dqn = True   # Double DQN enabled
 
         # Replay buffer
         self.memory = ReplayBuffer(capacity=10000)
@@ -155,11 +156,16 @@ class DQNAgent:
             1, actions.unsqueeze(1)
         ).squeeze(1)
 
-        # Target Q-values from target network
-        # If done=1 (episode ended), future reward = 0
+        # Double DQN — decouple action selection from evaluation
+        # Step 1: online network selects the best action
+        # Step 2: target network evaluates that action
+        # This prevents overestimation of Q-values
         with torch.no_grad():
-            max_next_q = self.target_net(next_states).max(1)[0]
-            target_q = rewards + self.gamma * max_next_q * (1 - dones)
+            # Online net picks best action for next state
+            best_actions = self.online_net(next_states).argmax(1).unsqueeze(1)
+            # Target net evaluates that specific action
+            next_q = self.target_net(next_states).gather(1, best_actions).squeeze(1)
+            target_q = rewards + self.gamma * next_q * (1 - dones)
 
         # Compute loss and backpropagate
         loss = self.criterion(current_q, target_q)
@@ -194,6 +200,7 @@ class DQNAgent:
             "memory_size": len(self.memory),
             "episode_reward": round(self.episode_reward, 2),
             "avg_loss": round(avg_loss, 4),
+            "mode": "Double DQN" if self.use_double_dqn else "DQN",
         }
 
     def get_network_weights(self):
