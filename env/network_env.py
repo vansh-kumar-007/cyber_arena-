@@ -1,4 +1,7 @@
 # env/network_env.py
+# Multi-Agent version — supports configurable number of attackers and defenders
+# Architecture: Centralized Training, Decentralized Execution (CTDE)
+
 import random
 import copy
 from configs.network_config import (
@@ -8,24 +11,29 @@ from configs.network_config import (
 from env.reward import calculate_attacker_reward, calculate_defender_reward
 
 class NetworkEnvironment:
-    def __init__(self):
+    def __init__(self, n_attackers=1, n_defenders=1):
         self.topology = NETWORK_TOPOLOGY
+        self.n_attackers = n_attackers
+        self.n_defenders = n_defenders
         self.n_attacker_actions = len(ATTACK_TYPES)
         self.n_defender_actions = len(DEFENSE_TYPES)
+
+        # Starting positions spread across network
+        self.attacker_starts = ["N1", "N3", "N5", "N1"]
+        self.defender_starts = ["N2", "N4", "N6", "N2"]
+
         self.reset()
 
     def reset(self):
         self.nodes = copy.deepcopy(NODES)
         self.compromised = {node: False for node in self.nodes}
-        self.attacker_position = ATTACKER_START_NODE
-        self.detection_score = 0.1
         self.blocked_nodes = set()
         self.patched_nodes = set()
         self.honeypots = set()
         self.isolated_nodes = set()
         self.ids_active = False
+        self.detection_score = 0.1
         self.current_step = 0
-        self.attacker_detected = False
         self.attacker_won = False
         self.detection_count = 0
         self.attacker_score = 0
@@ -33,242 +41,91 @@ class NetworkEnvironment:
         self.last_attack = None
         self.last_defense = None
         self.battle_log = []
+
+        # Each attacker starts at different node
+        self.attacker_positions = [
+            self.attacker_starts[i % len(self.attacker_starts)]
+            for i in range(self.n_attackers)
+        ]
+
+        # Each defender patrols different node
+        self.defender_positions = [
+            self.defender_starts[i % len(self.defender_starts)]
+            for i in range(self.n_defenders)
+        ]
+
         return self._get_state()
 
     def _get_state(self):
+        """
+        State includes: node statuses + all agent positions
+        Each agent sees the full global state (centralized observation)
+        """
         state = []
         node_list = list(self.nodes.keys())
 
+        # Node statuses
         for node in node_list:
             state.append(1 if self.compromised[node] else 0)
             state.append(self.nodes[node]["vulnerability"])
             state.append(1 if node in self.blocked_nodes else 0)
             state.append(1 if node in self.honeypots else 0)
 
-        state.append(node_list.index(self.attacker_position) / len(node_list))
+        # All attacker positions (padded to max 4)
+        for i in range(4):
+            if i < len(self.attacker_positions):
+                pos = node_list.index(self.attacker_positions[i])
+                state.append(pos / len(node_list))
+            else:
+                state.append(-1)  # No agent
+
+        # All defender positions (padded to max 4)
+        for i in range(4):
+            if i < len(self.defender_positions):
+                pos = node_list.index(self.defender_positions[i])
+                state.append(pos / len(node_list))
+            else:
+                state.append(-1)
+
         state.append(self.detection_score)
         state.append(self.current_step / 50)
         state.append(1 if self.ids_active else 0)
-        state.append(len(self.compromised) / len(node_list))
+        state.append(self.n_attackers / 4)
+        state.append(self.n_defenders / 4)
 
         return tuple(round(x, 2) for x in state)
 
-    def step(self, attacker_action, defender_action):
+    def step(self, attacker_actions, defender_actions):
+        """
+        attacker_actions: list of actions, one per attacker
+        defender_actions: list of actions, one per defender
+        """
         self.current_step += 1
-        attacker_reward = 0
-        defender_reward = 0
+        total_att_reward = 0
+        total_def_reward = 0
         done = False
 
-        attack = ATTACK_TYPES[attacker_action]
-        defense = DEFENSE_TYPES[defender_action]
+        # ─── ALL ATTACKERS ACT ────────────────────────────────────────────────
+        for i, (action, position) in enumerate(
+            zip(attacker_actions, self.attacker_positions)
+        ):
+            att_reward, new_pos, done_flag = self._attacker_step(
+                i, action, position
+            )
+            self.attacker_positions[i] = new_pos
+            total_att_reward += att_reward
+            if done_flag:
+                done = True
 
-        self.last_attack = attack
-        self.last_defense = defense
-
-        current_node = self.attacker_position
-
-        # ─── ATTACKER ACTS ────────────────────────────────────────────────────
-
-        # Check honeypot trap
-        if current_node in self.honeypots:
-            self.attacker_detected = True
-            self.detection_count += 1
-            attacker_reward += calculate_attacker_reward("detected",
-                stealth=attack["stealth"])
-            defender_reward += calculate_defender_reward("honeypot_triggered",
-                attack_damage=attack["damage"])
-            self.log(f"🍯 Honeypot triggered! Attacker caught at {current_node}")
-
-        elif attacker_action == 11:
-            # Idle — stealth recovery
-            attacker_reward += 0
-
-        elif attacker_action == 6:
-            # Lateral movement
-            neighbors = self.topology.get(current_node, [])
-            reachable = [n for n in neighbors
-                        if n not in self.blocked_nodes
-                        and n not in self.isolated_nodes]
-            if reachable:
-                new_node = random.choice(reachable)
-                self.attacker_position = new_node
-                # Reward for moving toward uncompromised nodes
-                if not self.compromised[new_node]:
-                    attacker_reward += calculate_attacker_reward("move_to_new_node")
-                self.log(f"🔀 Attacker moved to {self.attacker_position}")
-            else:
-                attacker_reward += calculate_attacker_reward("wasted_action")
-
-        else:
-            # All attack types
-            if current_node in self.blocked_nodes or current_node in self.isolated_nodes:
-                attacker_reward += calculate_attacker_reward("wasted_action")
-                self.log(f"🚫 Attack blocked — node {current_node} is secured")
-            else:
-                vuln = self.nodes[current_node]["vulnerability"]
-                defense_strength = self.detection_score * 0.15
-                ids_bonus = 0.1 if self.ids_active else 0
-                success_prob = max(0.1, attack["base_success"] * vuln - defense_strength - ids_bonus)
-
-                if random.random() < success_prob:
-                    # Attack succeeded
-                    if attacker_action == 2:
-                        # DDoS — disrupts but doesn't compromise
-                        attacker_reward += calculate_attacker_reward(
-                            "ddos_success", node_value=self.nodes[current_node]["value"])
-                        self.log(f"💥 DDoS hit {current_node}!")
-
-                    elif attacker_action == 4:
-                        # Ransomware
-                        self.compromised[current_node] = True
-                        attacker_reward += calculate_attacker_reward("ransomware_success")
-                        defender_reward += calculate_defender_reward(
-                            "critical_node_compromised", attack_damage=8)
-                        self.attacker_score += 80
-                        self.log(f"💰 RANSOMWARE deployed on {current_node}!")
-
-                    elif attacker_action == 8:
-                        # Data exfiltration
-                        if self.compromised[current_node]:
-                            attacker_reward += calculate_attacker_reward("data_exfil_success")
-                            self.attacker_score += 60
-                            self.log(f"📤 Data exfiltrated from {current_node}!")
-                        else:
-                            attacker_reward += calculate_attacker_reward("wasted_action")
-
-                    else:
-                        # Standard compromise
-                        if not self.compromised[current_node]:
-                            self.compromised[current_node] = True
-                            node_val = self.nodes[current_node]["value"]
-                            attacker_reward += calculate_attacker_reward(
-                                "exploit_success",
-                                node_value=node_val,
-                                damage=attack["damage"],
-                                stealth=attack["stealth"]
-                            )
-                            self.attacker_score += node_val * 10
-                            self.log(f"{attack['emoji']} {attack['name']} succeeded on {current_node}!")
-
-                            if self.nodes[current_node]["critical"]:
-                                attacker_reward += calculate_attacker_reward(
-                                    "critical_node_reached", damage=attack["damage"])
-                                defender_reward += calculate_defender_reward(
-                                    "critical_node_compromised",
-                                    attack_damage=attack["damage"])
-                                self.attacker_won = True
-                                done = True
-                                self.log(f"🚨 CRITICAL NODE {current_node} COMPROMISED!")
-                        else:
-                            attacker_reward += calculate_attacker_reward("wasted_action")
-
-                    # Detection check
-                    detect_chance = self.detection_score * (1 - attack["stealth"])
-                    if random.random() < detect_chance:
-                        self.attacker_detected = True
-                        self.detection_count += 1
-                        attacker_reward += calculate_attacker_reward(
-                            "detected", stealth=attack["stealth"])
-                        defender_reward += calculate_defender_reward(
-                            "attack_detected", attack_damage=attack["damage"])
-                        self.log(f"👁️ Attack detected! ({attack['name']})")
-
-                else:
-                    attacker_reward += calculate_attacker_reward("wasted_action")
-                    self.log(f"❌ {attack['name']} failed on {current_node}")
-
-        # ─── DEFENDER ACTS ────────────────────────────────────────────────────
-
-        if not done:
-            if defender_action == 0:
-                # Monitor
-                self.detection_score = min(0.8, self.detection_score + 0.02)
-                self.log(f"👁️ Monitoring — detection: {self.detection_score:.2f}")
-
-            elif defender_action == 1:
-                # Block IP
-                compromised_list = [n for n in self.compromised if self.compromised[n]]
-                if compromised_list:
-                    target = random.choice(compromised_list)
-                    self.blocked_nodes.add(target)
-                    defender_reward += calculate_defender_reward(
-                        "attack_blocked", attack_damage=attack["damage"])
-                    self.defender_score += 25
-                    self.log(f"🚫 Blocked {target}")
-
-            elif defender_action == 2:
-                # Patch
-                unpatched = [n for n in self.nodes if n not in self.patched_nodes]
-                if unpatched:
-                    target = random.choice(unpatched)
-                    self.patched_nodes.add(target)
-                    self.nodes[target]["vulnerability"] = max(
-                        0.05, self.nodes[target]["vulnerability"] - 0.25)
-                    defender_reward += calculate_defender_reward("patch_success")
-                    self.defender_score += 10
-                    self.log(f"🔧 Patched {target}")
-
-            elif defender_action == 3:
-                # Deploy honeypot
-                uncompromised = [n for n in self.nodes
-                                if not self.compromised[n]
-                                and n not in self.honeypots]
-                if uncompromised:
-                    target = random.choice(uncompromised)
-                    self.honeypots.add(target)
-                    self.log(f"🍯 Honeypot deployed at {target}")
-
-            elif defender_action == 4:
-                # Firewall rule
-                self.detection_score = min(0.8, self.detection_score + 0.08)
-                self.log(f"🛡️ Firewall rule added")
-
-            elif defender_action == 5:
-                # Antivirus scan
-                found = [n for n in self.compromised
-                        if self.compromised[n]
-                        and n not in self.blocked_nodes]
-                if found and random.random() < 0.4:
-                    target = random.choice(found)
-                    self.compromised[target] = False
-                    defender_reward += calculate_defender_reward(
-                        "attack_blocked", attack_damage=3)
-                    self.defender_score += 20
-                    self.log(f"🔍 Antivirus cleaned {target}!")
-
-            elif defender_action == 6:
-                # Isolate node
-                if self.attacker_position not in self.isolated_nodes:
-                    self.isolated_nodes.add(self.attacker_position)
-                    defender_reward += calculate_defender_reward(
-                        "attack_blocked", attack_damage=attack["damage"])
-                    self.defender_score += 15
-                    self.log(f"🔒 Isolated {self.attacker_position}")
-
-            elif defender_action == 7:
-                # Reset credentials — reduces vulnerability
-                self.nodes[self.attacker_position]["vulnerability"] = max(
-                    0.1, self.nodes[self.attacker_position]["vulnerability"] - 0.15)
-                self.log(f"🔑 Credentials reset on {self.attacker_position}")
-
-            elif defender_action == 8:
-                # Deploy IDS
-                self.ids_active = True
-                self.detection_score = min(0.8, self.detection_score + 0.15)
-                self.defender_score += 10
-                self.log(f"🚨 IDS deployed!")
-
-            elif defender_action == 9:
-                # Backup — prevents ransomware from winning
-                self.log(f"💾 Systems backed up")
-
-            elif defender_action == 10:
-                # Threat intelligence
-                self.detection_score = min(0.8, self.detection_score + 0.1)
-                self.log(f"🧠 Threat intel gathered")
+        # ─── ALL DEFENDERS ACT ────────────────────────────────────────────────
+        for i, (action, position) in enumerate(
+            zip(defender_actions, self.defender_positions)
+        ):
+            def_reward, new_pos = self._defender_step(i, action, position)
+            self.defender_positions[i] = new_pos
+            total_def_reward += def_reward
 
         # ─── END CONDITIONS ───────────────────────────────────────────────────
-
         if self.current_step >= 50:
             done = True
 
@@ -277,7 +134,186 @@ class NetworkEnvironment:
             self.attacker_won = True
             done = True
 
-        return self._get_state(), attacker_reward, defender_reward, done
+        # Average rewards across agents
+        avg_att_reward = total_att_reward / self.n_attackers
+        avg_def_reward = total_def_reward / self.n_defenders
+
+        return self._get_state(), avg_att_reward, avg_def_reward, done
+
+    def _attacker_step(self, agent_idx, action, current_node):
+        """Single attacker agent step"""
+        att_reward = 0
+        new_pos = current_node
+        done = False
+        attack = ATTACK_TYPES[action]
+        self.last_attack = attack
+
+        if current_node in self.honeypots:
+            self.detection_count += 1
+            att_reward += calculate_attacker_reward("detected",
+                stealth=attack["stealth"])
+            self.log(f"🍯 Attacker {agent_idx+1} caught in honeypot at {current_node}!")
+            return att_reward, new_pos, done
+
+        if action == 11:  # Idle
+            return 0, new_pos, done
+
+        if action == 6:  # Lateral movement
+            neighbors = self.topology.get(current_node, [])
+            reachable = [n for n in neighbors
+                        if n not in self.blocked_nodes
+                        and n not in self.isolated_nodes]
+            if reachable:
+                new_pos = random.choice(reachable)
+                if not self.compromised[new_pos]:
+                    att_reward += calculate_attacker_reward("move_to_new_node")
+                self.log(f"🔀 Attacker {agent_idx+1} moved to {new_pos}")
+            return att_reward, new_pos, done
+
+        # Attack current node
+        if current_node not in self.blocked_nodes and \
+           current_node not in self.isolated_nodes:
+            vuln = self.nodes[current_node]["vulnerability"]
+            defense = self.detection_score * 0.1
+            ids_penalty = 0.1 if self.ids_active else 0
+            success_prob = max(0.1, attack["base_success"] * vuln
+                             - defense - ids_penalty)
+
+            if random.random() < success_prob:
+                if action == 4:  # Ransomware
+                    self.compromised[current_node] = True
+                    att_reward += calculate_attacker_reward("ransomware_success")
+                    self.attacker_score += 80
+                    self.log(f"💰 Attacker {agent_idx+1}: RANSOMWARE on {current_node}!")
+                elif action == 8:  # Data exfil
+                    if self.compromised[current_node]:
+                        att_reward += calculate_attacker_reward("data_exfil_success")
+                        self.attacker_score += 60
+                        self.log(f"📤 Attacker {agent_idx+1}: Data exfil from {current_node}!")
+                    else:
+                        att_reward += calculate_attacker_reward("wasted_action")
+                elif action == 2:  # DDoS
+                    att_reward += calculate_attacker_reward("ddos_success",
+                        node_value=self.nodes[current_node]["value"])
+                    self.log(f"💥 Attacker {agent_idx+1}: DDoS on {current_node}!")
+                else:
+                    if not self.compromised[current_node]:
+                        self.compromised[current_node] = True
+                        node_val = self.nodes[current_node]["value"]
+                        att_reward += calculate_attacker_reward(
+                            "exploit_success",
+                            node_value=node_val,
+                            damage=attack["damage"],
+                            stealth=attack["stealth"]
+                        )
+                        self.attacker_score += node_val * 10
+                        self.log(f"{attack['emoji']} Attacker {agent_idx+1}: "
+                                f"{attack['name']} on {current_node}!")
+
+                        if self.nodes[current_node]["critical"]:
+                            att_reward += calculate_attacker_reward(
+                                "critical_node_reached",
+                                damage=attack["damage"]
+                            )
+                            self.attacker_won = True
+                            done = True
+                            self.log(f"🚨 CRITICAL NODE {current_node} COMPROMISED!")
+                    else:
+                        att_reward += calculate_attacker_reward("wasted_action")
+
+                # Detection check
+                detect_chance = self.detection_score * (1 - attack["stealth"])
+                if self.ids_active:
+                    detect_chance = min(1.0, detect_chance * 1.5)
+                if random.random() < detect_chance:
+                    self.detection_count += 1
+                    att_reward += calculate_attacker_reward("detected",
+                        stealth=attack["stealth"])
+                    self.log(f"👁️ Attacker {agent_idx+1} detected!")
+            else:
+                att_reward += calculate_attacker_reward("wasted_action")
+        else:
+            att_reward += calculate_attacker_reward("wasted_action")
+
+        return att_reward, new_pos, done
+
+    def _defender_step(self, agent_idx, action, current_node):
+        """Single defender agent step"""
+        def_reward = 0
+        new_pos = current_node
+        defense = DEFENSE_TYPES[action]
+        self.last_defense = defense
+
+        if action == 0:  # Monitor
+            self.detection_score = min(0.8, self.detection_score + 0.02)
+
+        elif action == 1:  # Block IP
+            compromised = [n for n in self.compromised if self.compromised[n]]
+            if compromised:
+                target = random.choice(compromised)
+                self.blocked_nodes.add(target)
+                def_reward += calculate_defender_reward("attack_blocked", 2)
+                self.defender_score += 25
+                self.log(f"🚫 Defender {agent_idx+1}: Blocked {target}")
+
+        elif action == 2:  # Patch
+            unpatched = [n for n in self.nodes if n not in self.patched_nodes]
+            if unpatched:
+                target = random.choice(unpatched)
+                self.patched_nodes.add(target)
+                self.nodes[target]["vulnerability"] = max(
+                    0.05, self.nodes[target]["vulnerability"] - 0.25)
+                def_reward += calculate_defender_reward("patch_success")
+                self.defender_score += 10
+                self.log(f"🔧 Defender {agent_idx+1}: Patched {target}")
+
+        elif action == 3:  # Honeypot
+            uncompromised = [n for n in self.nodes
+                           if not self.compromised[n]
+                           and n not in self.honeypots]
+            if uncompromised:
+                target = random.choice(uncompromised)
+                self.honeypots.add(target)
+                self.log(f"🍯 Defender {agent_idx+1}: Honeypot at {target}")
+
+        elif action == 4:  # Firewall
+            self.detection_score = min(0.8, self.detection_score + 0.08)
+
+        elif action == 5:  # Antivirus
+            found = [n for n in self.compromised
+                    if self.compromised[n]
+                    and n not in self.blocked_nodes]
+            if found and random.random() < 0.4:
+                target = random.choice(found)
+                self.compromised[target] = False
+                def_reward += calculate_defender_reward("attack_blocked", 3)
+                self.defender_score += 20
+                self.log(f"🔍 Defender {agent_idx+1}: Cleaned {target}!")
+
+        elif action == 6:  # Isolate
+            # Defender moves to most threatened node
+            att_positions = set(self.attacker_positions)
+            if att_positions:
+                target = random.choice(list(att_positions))
+                self.isolated_nodes.add(target)
+                def_reward += calculate_defender_reward("attack_blocked", 2)
+                self.defender_score += 15
+                self.log(f"🔒 Defender {agent_idx+1}: Isolated {target}")
+
+        elif action == 7:  # Reset credentials
+            self.nodes[current_node]["vulnerability"] = max(
+                0.1, self.nodes[current_node]["vulnerability"] - 0.15)
+
+        elif action == 8:  # Deploy IDS
+            self.ids_active = True
+            self.detection_score = min(0.8, self.detection_score + 0.15)
+            self.defender_score += 10
+            self.log(f"🚨 Defender {agent_idx+1}: IDS deployed!")
+
+        elif action == 10:  # Threat intel
+            self.detection_score = min(0.8, self.detection_score + 0.1)
+
+        return def_reward, new_pos
 
     def log(self, message):
         self.battle_log.append(f"Step {self.current_step}: {message}")
@@ -287,7 +323,9 @@ class NetworkEnvironment:
     def get_info(self):
         return {
             "compromised": self.compromised,
-            "attacker_position": self.attacker_position,
+            "attacker_positions": self.attacker_positions,
+            "attacker_position": self.attacker_positions[0],
+            "defender_positions": self.defender_positions,
             "detection_score": round(self.detection_score, 2),
             "blocked_nodes": list(self.blocked_nodes),
             "patched_nodes": list(self.patched_nodes),
@@ -300,5 +338,7 @@ class NetworkEnvironment:
             "defender_score": self.defender_score,
             "last_attack": self.last_attack,
             "last_defense": self.last_defense,
-            "battle_log": self.battle_log
+            "battle_log": self.battle_log,
+            "n_attackers": self.n_attackers,
+            "n_defenders": self.n_defenders,
         }
