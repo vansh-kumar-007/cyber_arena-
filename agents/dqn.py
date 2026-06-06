@@ -200,7 +200,8 @@ class DQNAgent:
         self.memory.update_priorities(indices, td_errors)
 
         # Weighted loss — important experiences contribute more
-        loss = (weights * (current_q - target_q) ** 2).mean()
+        td_errors_tensor = (current_q - target_q.detach())
+        loss = (weights * td_errors_tensor ** 2).mean()
 
         self.optimizer.zero_grad()
         loss.backward()

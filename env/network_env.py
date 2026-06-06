@@ -32,7 +32,7 @@ class NetworkEnvironment:
         self.honeypots = set()
         self.isolated_nodes = set()
         self.ids_active = False
-        self.detection_score = 0.1
+        self.detection_score = 0.05
         self.current_step = 0
         self.attacker_won = False
         self.detection_count = 0
@@ -126,7 +126,7 @@ class NetworkEnvironment:
             total_def_reward += def_reward
 
         # ─── END CONDITIONS ───────────────────────────────────────────────────
-        if self.current_step >= 50:
+        if self.current_step >= 200:
             done = True
 
         critical_nodes = [n for n in self.nodes if self.nodes[n]["critical"]]
@@ -245,7 +245,11 @@ class NetworkEnvironment:
         self.last_defense = defense
 
         if action == 0:  # Monitor
-            self.detection_score = min(0.8, self.detection_score + 0.02)
+            self.detection_score = min(0.5, self.detection_score + 0.01)
+            # Only score if there's actually an attacker to detect
+            compromised_count = sum(1 for v in self.compromised.values() if v)
+            if compromised_count > 0:
+                self.defender_score += 2
 
         elif action == 1:  # Block IP
             compromised = [n for n in self.compromised if self.compromised[n]]
@@ -253,7 +257,7 @@ class NetworkEnvironment:
                 target = random.choice(compromised)
                 self.blocked_nodes.add(target)
                 def_reward += calculate_defender_reward("attack_blocked", 2)
-                self.defender_score += 25
+                self.defender_score += 5
                 self.log(f"🚫 Defender {agent_idx+1}: Blocked {target}")
 
         elif action == 2:  # Patch
@@ -287,17 +291,17 @@ class NetworkEnvironment:
                 target = random.choice(found)
                 self.compromised[target] = False
                 def_reward += calculate_defender_reward("attack_blocked", 3)
-                self.defender_score += 20
+                self.defender_score += 8
                 self.log(f"🔍 Defender {agent_idx+1}: Cleaned {target}!")
 
         elif action == 6:  # Isolate
-            # Defender moves to most threatened node
-            att_positions = set(self.attacker_positions)
-            if att_positions:
-                target = random.choice(list(att_positions))
+            # Can only isolate compromised nodes, not attacker position directly
+            compromised_list = [n for n in self.compromised if self.compromised[n]]
+            if compromised_list:
+                target = random.choice(compromised_list)
                 self.isolated_nodes.add(target)
                 def_reward += calculate_defender_reward("attack_blocked", 2)
-                self.defender_score += 15
+                self.defender_score += 10
                 self.log(f"🔒 Defender {agent_idx+1}: Isolated {target}")
 
         elif action == 7:  # Reset credentials

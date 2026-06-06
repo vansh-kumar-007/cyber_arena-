@@ -1250,8 +1250,10 @@ const saveSession = useCallback((state, log) => {
             if (!prev.isRunning) return prev;
             if (prev.step >= 200) return { ...prev, isRunning: false };
 
-            const newRedScore = s.attacker_score || prev.redScore;
-            const newBlueScore = s.defender_score || prev.blueScore;
+            const newRedScore = (s.attacker_score !== undefined && s.attacker_score !== null)
+                ? s.attacker_score : prev.redScore;
+              const newBlueScore = (s.defender_score !== undefined && s.defender_score !== null)
+                ? s.defender_score : prev.blueScore;
             const newLog = (s.battle_log || []).slice().reverse();
 
             return {

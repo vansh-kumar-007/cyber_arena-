@@ -95,10 +95,11 @@ class SimulationManager:
         )
 
         # Learn from this step
+        # Store experience but don't learn during API gameplay
+        # Learning happens during training (train_dqn.py)
+        # This prevents gradient computation conflicts
         self.attacker.remember(state, att_action, att_reward, next_state, float(done))
         self.defender.remember(state, def_action, def_reward, next_state, float(done))
-        self.attacker.learn()
-        self.defender.learn()
 
         self.current_state = next_state
         self.is_done = done
@@ -123,11 +124,12 @@ class SimulationManager:
                 "isolated_nodes": info["isolated_nodes"],
                 "ids_active": info["ids_active"],
                 "attacker_won": info["attacker_won"],
-                "attacker_score": info["attacker_score"],
-                "defender_score": info["defender_score"],
+                "attacker_score": info["attacker_score"],    # make sure this is here
+                "defender_score": info["defender_score"],    # make sure this is here
                 "battle_log": info["battle_log"],
                 "last_attack": info["last_attack"],
                 "last_defense": info["last_defense"],
+                "attacker_positions": info["attacker_positions"],
             },
             "att_action": att_action,
             "def_action": def_action,

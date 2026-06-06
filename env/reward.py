@@ -3,10 +3,10 @@
 
 def calculate_attacker_reward(event, node_value=0, damage=0, stealth=1.0):
     if event == "exploit_success":
-        return (8 * node_value) + (3 * damage)   # Immediate progress reward
+        return (15 * node_value) + (5 * damage)
 
     elif event == "critical_node_reached":
-        return 40 + (8 * damage)
+        return 80 + (10 * damage)
 
     elif event == "detected":
         return -10 * (1 - stealth)               # Stealth attacks hurt less
