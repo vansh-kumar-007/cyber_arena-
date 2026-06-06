@@ -35,29 +35,26 @@ class SimulationManager:
         self.is_done = False
 
     def _load_models(self):
-        """Load trained DQN models if available — handles size mismatch gracefully"""
-        att_path = "models/best_attacker.pt"
-        def_path = "models/best_defender.pt"
+        """Try loading models in order of preference"""
+        model_options = [
+            ("models/final_marl_attacker_1v1.pt", "models/final_marl_defender_1v1_defender.pt"),
+            ("models/best_attacker.pt", "models/best_defender.pt"),
+            ("models/final_attacker.pt", "models/final_defender.pt"),
+        ]
 
-        if os.path.exists(att_path):
-            try:
-                self.attacker.load(att_path)
-                print(f"✅ Loaded attacker model from {att_path}")
-            except RuntimeError as e:
-                print(f"⚠️ Could not load attacker model (size mismatch) — using fresh weights")
-                print(f"   Reason: {e}")
-        else:
-            print("⚠️ No trained attacker model found, using random weights")
+        for att_path, def_path in model_options:
+            if os.path.exists(att_path) and os.path.exists(def_path):
+                try:
+                    self.attacker.load(att_path)
+                    self.defender.load(def_path)
+                    print(f"✅ Loaded models: {att_path}")
+                    return
+                except RuntimeError:
+                    print(f"⚠️ Size mismatch for {att_path}, trying next...")
+                    continue
 
-        if os.path.exists(def_path):
-            try:
-                self.defender.load(def_path)
-                print(f"✅ Loaded defender model from {def_path}")
-            except RuntimeError as e:
-                print(f"⚠️ Could not load defender model (size mismatch) — using fresh weights")
-                print(f"   Reason: {e}")
-        else:
-            print("⚠️ No trained defender model found, using random weights")
+        print("⚠️ No compatible models found — using fresh weights")
+        print("   API will still work, agents start untrained")
 
     def reset(self):
         """Reset environment for new episode"""
