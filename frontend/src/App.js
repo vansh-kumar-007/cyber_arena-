@@ -1185,9 +1185,25 @@ const saveSession = useCallback((state, log) => {
 
   const startGame = async () => {
     if (useRealAI && apiConnected) {
-      await apiCall("/reset", "POST");
+      try {
+        await apiCall("/reset", "POST");
+      } catch(e) {
+        console.log("Reset failed, continuing anyway");
+      }
     }
-    setGameState(prev => ({ ...prev, isRunning: true }));
+    setGameState(prev => ({
+      ...prev,
+      isRunning: true,
+      step: 0,
+      redScore: 0,
+      blueScore: 0,
+      compromised: { N1:false, N2:false, N3:false, N4:false, N5:false, N6:false },
+      blocked: [],
+      honeypots: [],
+      battleLog: [],
+      redRewards: [],
+      blueRewards: [],
+    }));
   };
 
   const pauseGame = () => {
@@ -1213,64 +1229,79 @@ const saveSession = useCallback((state, log) => {
   }, []);
 
   useEffect(() => {
-    if (gameState.isRunning) {
-      intervalRef.current = setInterval(async () => {
-        setGameState(prev => {
-          if (prev.step >= 200) {
-            return { ...prev, isRunning: false };
-          }
-          return prev;
-        });
-
-        if (useRealAI && apiConnected) {
-          // Use REAL Python DQN
-          const data = await apiCall("/step", "POST");
-          if (data) {
-            setGameState(prev => {
-              if (prev.step >= 200) return { ...prev, isRunning: false };
-              const s = data.state;
-              const attack = ATTACKS[data.att_action] || null;
-              const defense = DEFENSES[data.def_action] || null;
-              const newLog = s.battle_log || [];
-              const newRedScore = s.attacker_score || prev.redScore;
-              const newBlueScore = s.defender_score || prev.blueScore;
-
-              return {
-                ...prev,
-                compromised: s.compromised,
-                attackerPosition: s.attacker_position,
-                detectionScore: s.detection_score,
-                blocked: s.blocked_nodes || [],
-                honeypots: s.honeypots || [],
-                idsActive: s.ids_active,
-                redScore: newRedScore,
-                blueScore: newBlueScore,
-                step: data.step,
-                lastAttack: attack,
-                lastDefense: defense,
-                lastEvent: null,
-                battleLog: newLog,
-                redRewards: [...prev.redRewards, newRedScore],
-                blueRewards: [...prev.blueRewards, newBlueScore],
-                isRunning: !data.done,
-              };
-            });
-          }
-        } else {
-          // Use frontend simulation
-          setGameState(prev => {
-            if (prev.step >= 200) return { ...prev, isRunning: false };
-            const next = runSimulationStep(prev);
-            if (next.battleLog[0] !== prev.battleLog[0]) {
-              setFullLog(fl => [next.battleLog[0], ...fl]);
-            }
-            return next;
-          });
-        }
-      }, gameState.speed);
-    } else {
+    if (!gameState.isRunning) {
       clearInterval(intervalRef.current);
+      return;
     }
+
+    intervalRef.current = setInterval(async () => {
+
+      if (useRealAI && apiConnected) {
+        // ── REAL DQN MODE ──────────────────────────────────────
+        try {
+          const data = await apiCall("/step", "POST");
+          if (!data) return;
+
+          const s = data.state;
+          const attack = ATTACKS[data.att_action] || null;
+          const defense = DEFENSES[data.def_action] || null;
+
+          setGameState(prev => {
+            if (!prev.isRunning) return prev;
+            if (prev.step >= 200) return { ...prev, isRunning: false };
+
+            const newRedScore = s.attacker_score || prev.redScore;
+            const newBlueScore = s.defender_score || prev.blueScore;
+            const newLog = (s.battle_log || []).slice().reverse();
+
+            return {
+              ...prev,
+              compromised: s.compromised || prev.compromised,
+              attackerPosition: s.attacker_position || prev.attackerPosition,
+              attackerPositions: s.attacker_positions || prev.attackerPositions,
+              detectionScore: s.detection_score || prev.detectionScore,
+              blocked: s.blocked_nodes || prev.blocked,
+              honeypots: s.honeypots || prev.honeypots,
+              idsActive: s.ids_active || prev.idsActive,
+              redScore: newRedScore,
+              blueScore: newBlueScore,
+              step: data.step || prev.step + 1,
+              lastAttack: attack,
+              lastDefense: defense,
+              lastEvent: null,
+              battleLog: newLog,
+              redRewards: [...prev.redRewards, newRedScore],
+              blueRewards: [...prev.blueRewards, newBlueScore],
+              isRunning: !data.done && prev.step < 200,
+            };
+          });
+
+          // Auto-save when done
+          if (data.done) {
+            setGameState(prev => ({ ...prev, isRunning: false }));
+          }
+
+        } catch(e) {
+          console.error("API step failed:", e);
+          // Fall back to simulation mode if API fails
+          setGameState(prev => runSimulationStep(prev));
+        }
+
+      } else {
+        // ── SIMULATION MODE ────────────────────────────────────
+        setGameState(prev => {
+          if (!prev.isRunning) return prev;
+          if (prev.step >= 200) return { ...prev, isRunning: false };
+          const next = runSimulationStep(prev);
+          if (next.battleLog[0] !== prev.battleLog[0]) {
+            setFullLog(fl => [next.battleLog[0], ...fl]);
+          }
+          return next;
+        });
+      }
+
+    }, gameState.speed);
+
     return () => clearInterval(intervalRef.current);
   }, [gameState.isRunning, gameState.speed, useRealAI, apiConnected]);
 
