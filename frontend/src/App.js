@@ -90,6 +90,10 @@ function runSimulationStep(gameState) {
   const defense = defenses[defenseId];
 
   let newState = { ...gameState };
+  // Sync attackerPosition with first attacker for legacy compatibility
+  if (newState.attackerPositions && newState.attackerPositions.length > 0) {
+    newState.attackerPosition = newState.attackerPositions[0];
+  }
   let logEntry = "";
   let event = null;
 
@@ -188,6 +192,31 @@ function runSimulationStep(gameState) {
   newState.redRewards = [...newState.redRewards, newState.redScore];
   newState.blueRewards = [...newState.blueRewards, newState.blueScore];
 
+  // Update all attacker positions based on nAttackers
+  const nAtt = newState.nAttackers || 1;
+  const attStartNodes = ["N1", "N3", "N5", "N1"];
+  if (!newState.attackerPositions || newState.attackerPositions.length !== nAtt) {
+    newState.attackerPositions = attStartNodes.slice(0, nAtt);
+  }
+  // Move one random attacker each step for multi-agent feel
+  if (nAtt > 1 && Math.random() > 0.5) {
+    const idx = Math.floor(Math.random() * nAtt);
+    const neighbors = {
+      N1: ["N2","N3","N5"], N2: ["N1","N4"],
+      N3: ["N1","N5"], N4: ["N2","N6"],
+      N5: ["N1","N3"], N6: ["N4"]
+    };
+    const cur = newState.attackerPositions[idx];
+    const reachable = neighbors[cur] || [];
+    if (reachable.length > 0 && Math.random() > 0.6) {
+      newState.attackerPositions = [...newState.attackerPositions];
+      newState.attackerPositions[idx] = reachable[
+        Math.floor(Math.random() * reachable.length)
+      ];
+    }
+  }
+  newState.attackerPosition = newState.attackerPositions[0];
+
   return newState;
 }
 
@@ -196,6 +225,8 @@ const initialState = {
   blocked: [],
   honeypots: [],
   attackerPosition: "N1",
+  attackerPositions: ["N1"],        // ADD THIS
+  defenderPositions: ["N2"],        // ADD THIS
   detectionScore: 0.1,
   idsActive: false,
   redScore: 0,
@@ -209,8 +240,10 @@ const initialState = {
   blueRewards: [],
   isRunning: false,
   speed: 500,
-  sessionId: null,      
+  sessionId: null,
   startTime: null,
+  nAttackers: 1,                    // ADD THIS
+  nDefenders: 1,                    // ADD THIS
 };
 
 // ─── COMPONENTS ───────────────────────────────────────────────────────────────
@@ -324,13 +357,18 @@ function NetworkGraph({ gameState }) {
                 fontSize="12">🍯</text>
             )}
 
-            {/* Attacker skull */}
-            {isAttackerHere && (
-              <motion.text x={node.x} y={node.y - 40}
-                textAnchor="middle" fontSize="18"
-                animate={{ y: [node.y - 40, node.y - 45, node.y - 40] }}
-                transition={{ duration: 1, repeat: Infinity }}
-              >💀</motion.text>
+            {/* Multiple attacker skulls */}
+            {(gameState.attackerPositions || [gameState.attackerPosition]).map((pos, ai) =>
+              pos === node.id && (
+                <motion.text
+                  key={`skull-${ai}`}
+                  x={node.x + (ai * 12) - 6}
+                  y={node.y - 40}
+                  textAnchor="middle" fontSize="14"
+                  animate={{ y: [node.y - 40, node.y - 45, node.y - 40] }}
+                  transition={{ duration: 1, repeat: Infinity, delay: ai * 0.2 }}
+                >💀</motion.text>
+              )
             )}
 
             {/* Node name below */}
@@ -344,12 +382,12 @@ function NetworkGraph({ gameState }) {
   );
 }
 
-function Scoreboard({ redScore, blueScore, step, detectionScore, idsActive }) {
+function Scoreboard({ redScore, blueScore, step, detectionScore, idsActive, nAttackers, nDefenders }) {
   return (
     <div style={{ display: "flex", gap: "12px", marginBottom: "12px" }}>
       <PixelBorder color={COLORS.red} style={{ flex: 1, padding: "12px", textAlign: "center" }}>
         <div style={{ color: COLORS.red, fontFamily: PIXEL_FONT, fontSize: "11px", letterSpacing: "2px" }}>
-          ◄ RED TEAM
+          ◄ RED TEAM {"💀".repeat(nAttackers || 1)}
         </div>
         <motion.div
           key={redScore}
@@ -359,7 +397,9 @@ function Scoreboard({ redScore, blueScore, step, detectionScore, idsActive }) {
         >
           {redScore}
         </motion.div>
-        <div style={{ color: COLORS.gray, fontSize: "9px", fontFamily: PIXEL_FONT }}>ATTACKER POINTS</div>
+        <div style={{ color: COLORS.gray, fontSize: "9px", fontFamily: PIXEL_FONT }}>
+          {nAttackers || 1} ATTACKER{(nAttackers || 1) > 1 ? "S" : ""}
+        </div>
       </PixelBorder>
 
       <PixelBorder color={COLORS.yellow} style={{ flex: 1, padding: "12px", textAlign: "center" }}>
@@ -372,7 +412,7 @@ function Scoreboard({ redScore, blueScore, step, detectionScore, idsActive }) {
 
       <PixelBorder color={COLORS.blue} style={{ flex: 1, padding: "12px", textAlign: "center" }}>
         <div style={{ color: COLORS.blue, fontFamily: PIXEL_FONT, fontSize: "11px", letterSpacing: "2px" }}>
-          BLUE TEAM ►
+          {"🛡️".repeat(nDefenders || 1)} BLUE TEAM ►
         </div>
         <motion.div
           key={blueScore}
@@ -382,7 +422,9 @@ function Scoreboard({ redScore, blueScore, step, detectionScore, idsActive }) {
         >
           {blueScore}
         </motion.div>
-        <div style={{ color: COLORS.gray, fontSize: "9px", fontFamily: PIXEL_FONT }}>DEFENDER POINTS</div>
+        <div style={{ color: COLORS.gray, fontSize: "9px", fontFamily: PIXEL_FONT }}>
+          {nDefenders || 1} DEFENDER{(nDefenders || 1) > 1 ? "S" : ""}
+        </div>
       </PixelBorder>
     </div>
   );
@@ -1305,6 +1347,46 @@ useEffect(() => {
           ))}
         </div>
 
+        {/* Agent Count Controls */}
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+          <span style={{ color: COLORS.gray, fontSize: "10px", fontFamily: PIXEL_FONT }}>
+            AGENTS:
+          </span>
+          <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+            <span style={{ color: COLORS.red, fontFamily: PIXEL_FONT, fontSize: "9px" }}>⚔️</span>
+            {[1,2,3,4].map(n => (
+              <motion.button key={n}
+                whileHover={{ scale: 1.1 }}
+                onClick={() => setGameState(prev => ({ ...prev, nAttackers: n }))}
+                style={{
+                  background: gameState.nAttackers === n ? COLORS.red : "transparent",
+                  border: `1px solid ${COLORS.red}`,
+                  color: gameState.nAttackers === n ? COLORS.white : COLORS.red,
+                  fontFamily: PIXEL_FONT, fontSize: "9px",
+                  padding: "3px 7px", cursor: "pointer",
+                }}
+              >{n}</motion.button>
+            ))}
+          </div>
+          <span style={{ color: COLORS.gray, fontFamily: PIXEL_FONT, fontSize: "9px" }}>VS</span>
+          <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+            <span style={{ color: COLORS.blue, fontFamily: PIXEL_FONT, fontSize: "9px" }}>🛡️</span>
+            {[1,2,3,4].map(n => (
+              <motion.button key={n}
+                whileHover={{ scale: 1.1 }}
+                onClick={() => setGameState(prev => ({ ...prev, nDefenders: n }))}
+                style={{
+                  background: gameState.nDefenders === n ? COLORS.blue : "transparent",
+                  border: `1px solid ${COLORS.blue}`,
+                  color: gameState.nDefenders === n ? COLORS.white : COLORS.blue,
+                  fontFamily: PIXEL_FONT, fontSize: "9px",
+                  padding: "3px 7px", cursor: "pointer",
+                }}
+              >{n}</motion.button>
+            ))}
+          </div>
+        </div>
+
         {/* AI Mode Toggle */}
         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
           <span style={{ color: COLORS.gray, fontSize: "10px", fontFamily: PIXEL_FONT }}>
@@ -1345,13 +1427,14 @@ useEffect(() => {
         </span>
       </div>
 
-      {/* Scoreboard */}
       <Scoreboard
         redScore={gameState.redScore}
         blueScore={gameState.blueScore}
         step={gameState.step}
         detectionScore={gameState.detectionScore}
         idsActive={gameState.idsActive}
+        nAttackers={gameState.nAttackers}
+        nDefenders={gameState.nDefenders}
       />
 
       {/* Main Layout */}
