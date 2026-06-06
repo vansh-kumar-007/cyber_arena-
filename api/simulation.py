@@ -35,19 +35,27 @@ class SimulationManager:
         self.is_done = False
 
     def _load_models(self):
-        """Load trained DQN models if available"""
+        """Load trained DQN models if available — handles size mismatch gracefully"""
         att_path = "models/best_attacker.pt"
         def_path = "models/best_defender.pt"
 
         if os.path.exists(att_path):
-            self.attacker.load(att_path)
-            print(f"✅ Loaded attacker model from {att_path}")
+            try:
+                self.attacker.load(att_path)
+                print(f"✅ Loaded attacker model from {att_path}")
+            except RuntimeError as e:
+                print(f"⚠️ Could not load attacker model (size mismatch) — using fresh weights")
+                print(f"   Reason: {e}")
         else:
             print("⚠️ No trained attacker model found, using random weights")
 
         if os.path.exists(def_path):
-            self.defender.load(def_path)
-            print(f"✅ Loaded defender model from {def_path}")
+            try:
+                self.defender.load(def_path)
+                print(f"✅ Loaded defender model from {def_path}")
+            except RuntimeError as e:
+                print(f"⚠️ Could not load defender model (size mismatch) — using fresh weights")
+                print(f"   Reason: {e}")
         else:
             print("⚠️ No trained defender model found, using random weights")
 
