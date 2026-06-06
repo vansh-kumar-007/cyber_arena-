@@ -71,8 +71,16 @@ class SimulationManager:
         state = self.current_state
 
         # Get actions from DQN agents
-        att_action = self.attacker.choose_action(state)
-        def_action = self.defender.choose_action(state)
+        # Environment expects lists (one action per agent)
+        n_att = self.env.n_attackers
+        n_def = self.env.n_defenders
+
+        att_actions = [self.attacker.choose_action(state) for _ in range(n_att)]
+        def_actions = [self.defender.choose_action(state) for _ in range(n_def)]
+
+        # Use first action for logging/visualization
+        att_action = att_actions[0]
+        def_action = def_actions[0]
 
         # Get Q-values for visualization
         import torch
@@ -83,7 +91,7 @@ class SimulationManager:
 
         # Step environment
         next_state, att_reward, def_reward, done = self.env.step(
-            att_action, def_action
+            att_actions, def_actions
         )
 
         # Learn from this step
