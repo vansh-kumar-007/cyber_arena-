@@ -175,6 +175,10 @@ def main() -> int:
 
     memory_path = work_dir / "agent-memory.sqlite3"
     memory = ExperienceMemory(memory_path)
+    original_project_root = train_dqn.PROJECT_ROOT
+    # Route model/checkpoint writes into the isolated CI artifact workspace, never
+    # into the checked-out repository (models/ is gitignored in normal use).
+    train_dqn.PROJECT_ROOT = work_dir
     try:
         training_metrics, trained_attacker, trained_defender = train_dqn.train_marl(
             n_attackers=1,
@@ -189,6 +193,7 @@ def main() -> int:
         memory_summary = memory.summary()
     finally:
         memory.close()
+        train_dqn.PROJECT_ROOT = original_project_root
 
     candidate_attacker_path = model_dir / f"final_marl_attacker_{context}.pt"
     candidate_defender_path = model_dir / f"final_marl_defender_{context}_defender.pt"
