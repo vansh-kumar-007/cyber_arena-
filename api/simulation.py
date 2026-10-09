@@ -29,8 +29,12 @@ class SimulationManager:
         memory: ExperienceMemory | None = None,
         model_dir: str | Path | None = None,
         seed: int | None = None,
+        n_attackers: int = 1,
+        n_defenders: int = 1,
     ) -> None:
-        self.env = NetworkEnvironment(seed=seed)
+        self.env = NetworkEnvironment(
+            n_attackers=n_attackers, n_defenders=n_defenders, seed=seed, max_steps=50
+        )
         sample_state = self.env.reset()
         self.state_size = len(sample_state)
         self.attacker = DQNAttacker(state_size=self.state_size)
@@ -48,11 +52,19 @@ class SimulationManager:
 
     def _load_models(self) -> bool:
         """Load the first complete and architecture-compatible checkpoint pair."""
-        model_options = (
-            ("final_marl_attacker_1v1.pt", "final_marl_defender_1v1_defender.pt"),
-            ("best_attacker.pt", "best_defender.pt"),
-            ("final_attacker.pt", "final_defender.pt"),
-        )
+        context = f"{self.env.n_attackers}v{self.env.n_defenders}"
+        model_options = [
+            (f"final_marl_attacker_{context}.pt", f"final_marl_defender_{context}_defender.pt"),
+            (f"marl_{context}_attacker.pt", f"marl_{context}_defender.pt"),
+        ]
+        # Legacy checkpoint names are not scenario-labelled, so only load them
+        # for the original 1v1 configuration instead of silently reusing them
+        # for a different multi-agent configuration.
+        if context == "1v1":
+            model_options.extend([
+                ("best_attacker.pt", "best_defender.pt"),
+                ("final_attacker.pt", "final_defender.pt"),
+            ])
         for attacker_name, defender_name in model_options:
             attacker_path = self.model_dir / attacker_name
             defender_path = self.model_dir / defender_name
@@ -75,8 +87,29 @@ class SimulationManager:
         logger.warning("No compatible trained model pair found; API uses untrained weights")
         return False
 
-    def reset(self, *, seed: int | None = None) -> dict[str, Any]:
-        """Start a new episode."""
+    def reset(
+        self,
+        *,
+        seed: int | None = None,
+        n_attackers: int | None = None,
+        n_defenders: int | None = None,
+    ) -> dict[str, Any]:
+        """Start a new episode, optionally switching to a trained team-size scenario."""
+        target_attackers = self.env.n_attackers if n_attackers is None else n_attackers
+        target_defenders = self.env.n_defenders if n_defenders is None else n_defenders
+        if (target_attackers, target_defenders) != (self.env.n_attackers, self.env.n_defenders):
+            self.env = NetworkEnvironment(
+                n_attackers=target_attackers,
+                n_defenders=target_defenders,
+                seed=seed,
+                max_steps=50,
+            )
+            self.state_size = len(self.env.reset(seed=seed))
+            self.attacker = DQNAttacker(state_size=self.state_size)
+            self.defender = DQNDefender(state_size=self.state_size)
+            self.models_loaded = self._load_models()
+            self.attacker.epsilon = 0.0
+            self.defender.epsilon = 0.0
         self.current_state = self.env.reset(seed=seed)
         self.is_done = False
         self.episode_count += 1
@@ -240,4 +273,8 @@ class SimulationManager:
             "done": self.is_done,
             "step": self.env.current_step,
             "episode": self.episode_count,
+            "models_loaded": self.models_loaded,
+            "state_size": self.state_size,
+            "n_attackers": self.env.n_attackers,
+            "n_defenders": self.env.n_defenders,
         }
