@@ -5,8 +5,15 @@ gradient updates, allowing training to be reproducible and auditable.
 """
 from __future__ import annotations
 
+import argparse
+import hashlib
+import json
+import math
 import os
+import platform
 import random
+import signal
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -30,6 +37,90 @@ def _seed_everything(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+
+_STOP_REQUESTED = False
+
+
+def _request_graceful_stop(signum, frame) -> None:
+    """Finish the current episode, then write an interrupted-run report."""
+    global _STOP_REQUESTED
+    _STOP_REQUESTED = True
+    print(f"Stop requested by signal {signum}; finishing this episode before saving.")
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _write_training_report(
+    report_path: Path, *, started_at: datetime, run_status: str, context: str,
+    n_attackers: int, n_defenders: int, num_episodes_requested: int, seed: int | None,
+    resume: bool, restore_replay: bool, save_models: bool, model_dir: Path,
+    attacker_checkpoint: Path, defender_checkpoint: Path, metrics: Metrics,
+    memory: ExperienceMemory,
+) -> None:
+    """Atomically record seed/configuration, separate team metrics and artifact hashes."""
+    def safe_number(value):
+        number = float(value)
+        return number if math.isfinite(number) else None
+    episodes = []
+    for index, values in enumerate(zip(
+        metrics.attacker_rewards, metrics.defender_rewards, metrics.attacker_success,
+        metrics.defender_detections, metrics.episode_lengths,
+    ), start=1):
+        ar, dr, won, detections, steps = values
+        episodes.append({"episode_in_this_run":index,"attacker_reward":safe_number(ar),
+            "defender_reward":safe_number(dr),"attacker_won":bool(won),
+            "defender_detections":int(detections),"steps":int(steps)})
+    count=len(episodes)
+    artifacts={}
+    if save_models:
+        for name,path in (
+            ("attacker_resume",attacker_checkpoint),("defender_resume",defender_checkpoint),
+            ("attacker_candidate",model_dir/f"final_marl_attacker_{context}.pt"),
+            ("defender_candidate",model_dir/f"final_marl_defender_{context}_defender.pt"),
+        ):
+            if path.is_file():
+                artifacts[name]={"filename":path.name,"bytes":path.stat().st_size,"sha256":_sha256_file(path)}
+    report={
+        "format":"cyberarena.dqn-training-report","format_version":1,"run_status":run_status,
+        "started_at":started_at.isoformat(),"snapshot_at":datetime.now(timezone.utc).isoformat(),
+        "git_commit":os.environ.get("GITHUB_SHA") or os.environ.get("CYBERARENA_GIT_COMMIT"),
+        "scenario":{"name":context,"n_attackers":n_attackers,"n_defenders":n_defenders},
+        "training_config":{
+            "episodes_requested_this_run":num_episodes_requested,"episodes_completed_this_run":count,
+            "seed":seed,"resume":resume,"restore_replay":restore_replay,"save_models":save_models,
+            "gamma":0.95,"learning_rate":0.0005,"target_update_frequency":5,
+            "replay_capacity_per_agent":REPLAY_CAPACITY,
+            "reward_normalization":"team rewards / 30, clipped to [-3, 3]",
+            "reproducibility_note":"Seeds recorded; bitwise determinism is not guaranteed across library versions or hardware.",
+        },
+        "runtime":{"python":platform.python_version(),"numpy":np.__version__,
+                   "torch":str(torch.__version__),"cuda_available":bool(torch.cuda.is_available())},
+        "output_directory":str(model_dir),
+        "metrics_summary":{
+            "attacker_win_rate":safe_number(sum(metrics.attacker_success)/count) if count else None,
+            "mean_attacker_reward":safe_number(sum(metrics.attacker_rewards)/count) if count else None,
+            "mean_defender_reward":safe_number(sum(metrics.defender_rewards)/count) if count else None,
+            "mean_episode_steps":safe_number(sum(metrics.episode_lengths)/count) if count else None},
+        "metrics_by_episode":episodes,"experience_memory_summary":memory.summary(),"checkpoint_artifacts":artifacts,
+    }
+    report_path.parent.mkdir(parents=True,exist_ok=True)
+    temporary=report_path.with_suffix(report_path.suffix+".tmp")
+    try:
+        with temporary.open("w",encoding="utf-8",newline="\n") as stream:
+            json.dump(report,stream,indent=2,ensure_ascii=False,allow_nan=False)
+            stream.write("\n");stream.flush();os.fsync(stream.fileno())
+        os.replace(temporary,report_path)
+    finally:
+        try: temporary.unlink()
+        except FileNotFoundError: pass
+
 
 
 def _restore_replay(memory: ExperienceMemory, agent, *, agent_name: str, context: str) -> int:
@@ -104,6 +195,7 @@ def train_marl(
     memory: ExperienceMemory | None = None,
     resume: bool = False,
     restore_replay: bool = True,
+    output_dir: str | Path | None = None,
 ):
     """Train a shared DQN per team.
 
@@ -112,6 +204,7 @@ def train_marl(
         memory: Optional externally-managed memory database.
         resume: Restore latest per-configuration checkpoint weights/optimizer.
         restore_replay: Reload stored transitions for this exact team-size scenario.
+        output_dir: Directory for generated checkpoints and reports.
     """
     if not isinstance(num_episodes, int) or isinstance(num_episodes, bool) or num_episodes < 1:
         raise ValueError("num_episodes must be a positive integer")
@@ -121,7 +214,10 @@ def train_marl(
         _seed_everything(seed)
 
     context = f"{n_attackers}v{n_defenders}"
-    model_dir = resolve_model_dir(PROJECT_ROOT)
+    configured_output = output_dir if output_dir is not None else os.environ.get("CYBERARENA_TRAINING_OUTPUT_DIR", "").strip()
+    if output_dir is not None and not str(output_dir).strip():
+        raise ValueError("output_dir must be a non-empty directory path")
+    model_dir = Path(configured_output).expanduser().resolve() if configured_output else resolve_model_dir(PROJECT_ROOT)
     attacker_checkpoint = model_dir / f"marl_{context}_attacker.pt"
     defender_checkpoint = model_dir / f"marl_{context}_defender.pt"
     if resume:
@@ -132,6 +228,9 @@ def train_marl(
                 f"missing: {', '.join(missing)}. Start a fresh run with resume=False."
             )
 
+    started_at = datetime.now(timezone.utc)
+    run_stamp = started_at.strftime("%Y%m%dT%H%M%S%fZ")
+    report_path = model_dir / "reports" / f"training_{context}_seed-{seed if seed is not None else 'unseeded'}_{run_stamp}.json"
     owns_memory = memory is None
     memory = memory or ExperienceMemory()
     env = NetworkEnvironment(
@@ -192,10 +291,11 @@ def train_marl(
             ) from exc
 
     metrics = Metrics()
-    best_reward = float("-inf")
     print(f"Training for {num_episodes} episodes...")
 
     for episode in range(start_episode + 1, start_episode + num_episodes + 1):
+        if _STOP_REQUESTED:
+            break
         local_episode = episode - start_episode
         episode_seed = ((seed + episode - 1) % (2**32 - 1)) if seed is not None else None
         state = env.reset(seed=episode_seed)
@@ -264,11 +364,15 @@ def train_marl(
             print(f"  Attacker reward={att_stats['episode_reward']:.2f} epsilon={att_stats['epsilon']} loss={avg_att_loss:.4f}")
             print(f"  Defender reward={def_stats['episode_reward']:.2f} epsilon={def_stats['epsilon']} loss={avg_def_loss:.4f}")
             print(f"  Attacker win rate (last 100): {win_rate:.1f}% | {att_stats['mode']}")
-            if save_models and attacker_brain.episode_reward > best_reward:
-                best_reward = attacker_brain.episode_reward
+            if save_models:
+                # Refresh latest completed state, not a single best-reward episode.
                 model_dir.mkdir(parents=True, exist_ok=True)
                 attacker_brain.save(str(attacker_checkpoint))
                 defender_brain.save(str(defender_checkpoint))
+            _write_training_report(report_path,started_at=started_at,run_status="partial",context=context,
+                n_attackers=n_attackers,n_defenders=n_defenders,num_episodes_requested=num_episodes,
+                seed=seed,resume=resume,restore_replay=restore_replay,save_models=save_models,model_dir=model_dir,
+                attacker_checkpoint=attacker_checkpoint,defender_checkpoint=defender_checkpoint,metrics=metrics,memory=memory)
 
     print("=" * 60)
     print("   MARL Training Complete!")
@@ -286,13 +390,32 @@ def train_marl(
         attacker_brain.save(str(model_dir / f"final_marl_attacker_{context}.pt"))
         defender_brain.save(str(model_dir / f"final_marl_defender_{context}_defender.pt"))
 
-    print(f"Persistent memory summary: {memory.summary()}")
-    if owns_memory:
-        memory.close()
+    run_status = ("completed" if len(metrics.attacker_rewards) == num_episodes
+                  else "interrupted" if _STOP_REQUESTED else "stopped_early")
+    _write_training_report(report_path,started_at=started_at,run_status=run_status,context=context,
+        n_attackers=n_attackers,n_defenders=n_defenders,num_episodes_requested=num_episodes,seed=seed,
+        resume=resume,restore_replay=restore_replay,save_models=save_models,model_dir=model_dir,
+        attacker_checkpoint=attacker_checkpoint,defender_checkpoint=defender_checkpoint,metrics=metrics,memory=memory)
+    print(f"Training report saved: {report_path}")
+    print(f"Experience memory summary (retention depends on SQLite host): {memory.summary()}")
+    if owns_memory: memory.close()
     return metrics, attacker_brain, defender_brain
 
 
 if __name__ == "__main__":
-    configs = [(1, 1), (2, 2), (3, 2)]
-    for n_att, n_def in configs:
-        train_marl(n_attackers=n_att, n_defenders=n_def, num_episodes=500)
+    parser=argparse.ArgumentParser(description="Reproducible CPU-compatible CyberArena DQN training")
+    parser.add_argument("--episodes",type=int,default=500)
+    parser.add_argument("--seed",type=int,default=20261010)
+    parser.add_argument("--output-dir",type=Path,default=None)
+    parser.add_argument("--scenarios",nargs="+",choices=("1v1","2v2","3v2"),default=("1v1","2v2","3v2"))
+    parser.add_argument("--resume",action="store_true")
+    parser.add_argument("--no-save-models",action="store_true")
+    args=parser.parse_args()
+    signal.signal(signal.SIGINT,_request_graceful_stop)
+    if hasattr(signal,"SIGTERM"): signal.signal(signal.SIGTERM,_request_graceful_stop)
+    scenarios={"1v1":(1,1),"2v2":(2,2),"3v2":(3,2)}
+    for scenario in args.scenarios:
+        if _STOP_REQUESTED: break
+        n_att,n_def=scenarios[scenario]
+        train_marl(n_attackers=n_att,n_defenders=n_def,num_episodes=args.episodes,seed=args.seed,
+                   output_dir=args.output_dir,resume=args.resume,save_models=not args.no_save_models)

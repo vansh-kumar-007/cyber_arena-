@@ -3,6 +3,9 @@ __pycache__/
 *.pyc
 *.pyo
 .env
+.env.*
+!.env.example
+!frontend/.env.example
 
 # Node
 frontend/node_modules/
@@ -18,12 +21,19 @@ battle_log.txt
 
 # Keep models tracked (needed for Render)
 !models/
-# Runtime data (persistent storage should be provided by deployment configuration)
+# Runtime databases, registry state, reports and private exports must not enter Git
 /data/
 *.sqlite
 *.sqlite3
 *.sqlite3-shm
 *.sqlite3-wal
+/models/registry/
+/models/versions/
+/models/reports/
+/backups/
+/exports/
+/artifacts/
+*.experience-memory.json
 
 # Test and coverage output
 .pytest_cache/

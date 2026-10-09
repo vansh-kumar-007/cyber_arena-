@@ -10,6 +10,7 @@ import json
 import math
 import os
 import sqlite3
+import tempfile
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -160,20 +161,189 @@ class ExperienceMemory:
         return cursor.rowcount
 
     def storage_status(self) -> dict[str, Any]:
-        """Expose storage facts without returning filesystem paths or record contents."""
+        """Expose storage facts without implying that the host filesystem is durable."""
         return {
             "backend": "sqlite",
             "file_backed": self.file_backed,
             "path_explicitly_configured": self.path_explicitly_configured,
             "schema_version": SCHEMA_VERSION,
+            "persistence_verified": False,
+            "persistence_status": "unverified",
             "durability_note": (
-                "File-backed SQLite: durability still depends on the host's mount configuration."
+                "File-backed SQLite is only as durable as the host filesystem. "
+                "Survival across redeploys/restarts has not been verified."
                 if self.file_backed
-                else "In-memory SQLite: records do not survive process restart."
+                else "In-memory SQLite records are lost when the process restarts."
             ),
         }
 
-    def close(self) -> None:
+    def export_json(self, destination: str | os.PathLike[str], *, overwrite: bool = False) -> dict[str, Any]:
+        """Atomically export a versioned JSON package without overwriting by default."""
+        target = Path(destination).expanduser().resolve()
+        if self.file_backed and target == Path(self.path).expanduser().resolve():
+            raise ValueError("export destination must not be the active SQLite database")
+        if target.exists() and not overwrite:
+            raise FileExistsError(f"export already exists: {target}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with self._lock:
+            self._connection.execute("BEGIN")
+            try:
+                experiences = [
+                    self._public(row) for row in self._connection.execute(
+                        "SELECT * FROM experiences ORDER BY created_at, id"
+                    ).fetchall()
+                ]
+                transitions = []
+                for row in self._connection.execute("SELECT * FROM replay_transitions ORDER BY id").fetchall():
+                    item = dict(row)
+                    item["state"] = json.loads(item["state"])
+                    item["next_state"] = json.loads(item["next_state"])
+                    item["terminal"] = bool(item["terminal"])
+                    transitions.append(item)
+                self._connection.commit()
+            except Exception:
+                self._connection.rollback()
+                raise
+        package = {
+            "format": "cyberarena.experience-memory", "format_version": 1,
+            "schema_version": SCHEMA_VERSION, "exported_at": datetime.now(timezone.utc).isoformat(),
+            "experiences": experiences, "replay_transitions": transitions,
+        }
+        try:
+            content = json.dumps(package, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
+        except (TypeError, ValueError) as exc:
+            raise ValueError("memory contains non-JSON or non-finite values; export refused") from exc
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", newline="\n", dir=target.parent,
+                prefix=f".{target.name}.", suffix=".tmp", delete=False,
+            ) as stream:
+                temporary_path = Path(stream.name)
+                stream.write(content)
+                stream.flush()
+                os.fsync(stream.fileno())
+            try:
+                os.chmod(temporary_path, 0o600)
+            except OSError:
+                pass
+            if overwrite:
+                os.replace(temporary_path, target)
+                temporary_path = None
+            else:
+                os.link(temporary_path, target)
+                temporary_path.unlink()
+                temporary_path = None
+        finally:
+            if temporary_path is not None:
+                try: temporary_path.unlink()
+                except FileNotFoundError: pass
+        return {
+            "path": str(target), "experiences_exported": len(experiences),
+            "replay_transitions_exported": len(transitions), "format_version": 1,
+        }
+
+    def import_json(self, source: str | os.PathLike[str], *, max_bytes: int = 50 * 1024 * 1024) -> dict[str, Any]:
+        """Validate and transactionally merge a compatible memory package."""
+        if not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes < 1:
+            raise ValueError("max_bytes must be a positive integer")
+        source_path = Path(source).expanduser().resolve()
+        if self.file_backed and source_path == Path(self.path).expanduser().resolve():
+            raise ValueError("import source must not be the active SQLite database")
+        try:
+            with source_path.open("rb") as stream: raw = stream.read(max_bytes + 1)
+        except OSError as exc: raise ValueError(f"cannot read import package: {exc}") from exc
+        if len(raw) > max_bytes: raise ValueError(f"import package exceeds the {max_bytes}-byte limit")
+        def reject_constant(value: str): raise ValueError(f"non-finite JSON constant is not allowed: {value}")
+        try:
+            package = json.loads(raw.decode("utf-8"), parse_constant=reject_constant)
+        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError) as exc:
+            raise ValueError("import package is not valid strict UTF-8 JSON") from exc
+        if not isinstance(package, dict): raise ValueError("import package root must be an object")
+        if package.get("format") != "cyberarena.experience-memory" or package.get("format_version") != 1:
+            raise ValueError("unsupported experience-memory package format or version")
+        if package.get("schema_version") != SCHEMA_VERSION: raise ValueError("experience-memory schema is incompatible")
+        experiences, transitions = package.get("experiences"), package.get("replay_transitions")
+        if not isinstance(experiences, list) or not isinstance(transitions, list):
+            raise ValueError("experiences and replay_transitions must be arrays")
+        if len(experiences) > 100_000 or len(transitions) > 100_000:
+            raise ValueError("package exceeds the supported record-count limit")
+        exp_fields = {
+            "id", "created_at", "agent", "task", "state_summary", "action", "outcome",
+            "reward", "error_type", "lesson", "tags", "metadata", "lesson_status",
+        }
+        incoming_ids: set[str] = set()
+        normalized_exp = []
+        for i, row in enumerate(experiences):
+            if not isinstance(row, dict) or set(row) != exp_fields:
+                raise ValueError(f"experience[{i}] has an incompatible shape")
+            for key, limit in (("id",128),("created_at",64),("agent",100),("task",1000),("outcome",50),("lesson",4000)):
+                val = row[key]
+                if not isinstance(val, str) or not val.strip() or len(val) > limit:
+                    raise ValueError(f"experience[{i}].{key} is invalid")
+            if row["id"] in incoming_ids: raise ValueError(f"duplicate experience ID in package: {row['id']}")
+            incoming_ids.add(row["id"])
+            if row["error_type"] is not None and (not isinstance(row["error_type"],str) or len(row["error_type"])>250):
+                raise ValueError(f"experience[{i}].error_type is invalid")
+            reward = row["reward"]
+            if reward is not None and (isinstance(reward,bool) or not isinstance(reward,(int,float)) or not math.isfinite(float(reward))):
+                raise ValueError(f"experience[{i}].reward must be finite or null")
+            if not isinstance(row["tags"],list) or len(row["tags"])>200 or any(not isinstance(t,str) or len(t)>200 for t in row["tags"]):
+                raise ValueError(f"experience[{i}].tags is invalid")
+            if not isinstance(row["metadata"],dict) or row["lesson_status"] not in ("active","deprecated"):
+                raise ValueError(f"experience[{i}] metadata/lesson_status is invalid")
+            for key in ("state_summary","action","tags","metadata"):
+                try: json.dumps(row[key],allow_nan=False)
+                except (TypeError,ValueError,RecursionError) as exc: raise ValueError(f"experience[{i}].{key} is not strict JSON") from exc
+            normalized_exp.append((
+                row["id"],row["created_at"],row["agent"],row["task"],_json(row["state_summary"]),_json(row["action"]),
+                row["outcome"],float(reward) if reward is not None else None,row["error_type"],row["lesson"],
+                _json(row["tags"]),_json(row["metadata"]),row["lesson_status"],
+            ))
+        transition_fields = {"id","created_at","agent","context","experience_id","state","action","reward","next_state","terminal"}
+        normalized_transitions = []
+        def finite(value):
+            return not isinstance(value,bool) and isinstance(value,(int,float)) and math.isfinite(float(value))
+        for i, row in enumerate(transitions):
+            if not isinstance(row,dict) or set(row)!=transition_fields: raise ValueError(f"replay_transition[{i}] has an incompatible shape")
+            if isinstance(row["id"],bool) or not isinstance(row["id"],int) or row["id"]<1: raise ValueError(f"replay_transition[{i}].id is invalid")
+            if not isinstance(row["created_at"],str) or not row["created_at"] or len(row["created_at"])>64: raise ValueError(f"replay_transition[{i}].created_at is invalid")
+            if row["agent"] not in ("attacker","defender"): raise ValueError(f"replay_transition[{i}].agent is invalid")
+            context=row["context"]
+            if not isinstance(context,str) or not context.strip() or len(context)>128: raise ValueError(f"replay_transition[{i}].context is invalid")
+            linked=row["experience_id"]
+            if linked is not None and (not isinstance(linked,str) or not linked.strip() or len(linked)>128): raise ValueError(f"replay_transition[{i}].experience_id is invalid")
+            state,nxt=row["state"],row["next_state"]
+            if not isinstance(state,list) or not isinstance(nxt,list) or not state or len(state)!=len(nxt) or len(state)>4096:
+                raise ValueError(f"replay_transition[{i}] state dimensions are invalid")
+            if not all(finite(v) for v in state+nxt): raise ValueError(f"replay_transition[{i}] has non-finite states")
+            action,reward,terminal=row["action"],row["reward"],row["terminal"]
+            if isinstance(action,bool) or not isinstance(action,int) or not 0<=action<12: raise ValueError(f"replay_transition[{i}].action is invalid")
+            if not finite(reward) or not isinstance(terminal,bool): raise ValueError(f"replay_transition[{i}] reward/terminal is invalid")
+            normalized_transitions.append((row["created_at"],row["agent"],context,linked,_json([float(v) for v in state]),action,float(reward),_json([float(v) for v in nxt]),int(terminal)))
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                existing={item[0] for item in self._connection.execute("SELECT id FROM experiences").fetchall()}
+                collisions=incoming_ids & existing
+                if collisions: raise ValueError(f"experience ID already exists; import refused: {sorted(collisions)[0]}")
+                allowed=incoming_ids | existing
+                for i,row in enumerate(transitions):
+                    if row["experience_id"] is not None and row["experience_id"] not in allowed:
+                        raise ValueError(f"replay_transition[{i}] references a missing experience ID")
+                self._connection.executemany(
+                    """INSERT INTO experiences (id,created_at,agent,task,state_summary,action,outcome,reward,error_type,lesson,tags,metadata,lesson_status)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""", normalized_exp)
+                self._connection.executemany(
+                    """INSERT INTO replay_transitions (created_at,agent,context,experience_id,state,action,reward,next_state,terminal)
+                       VALUES (?,?,?,?,?,?,?,?,?)""", normalized_transitions)
+                self._connection.commit()
+            except Exception:
+                self._connection.rollback()
+                raise
+        return {"experiences_imported":len(normalized_exp),"replay_transitions_imported":len(normalized_transitions),"format_version":1}
+
+    def close(self) -> None
         with self._lock:
             self._connection.close()
 

@@ -1150,7 +1150,7 @@ function LogViewer({ sessions, onClose }) {
 function AgentMemoryPanel() {
   const [experiences, setExperiences] = useState([]);
   const [summary, setSummary] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
   const [matches, setMatches] = useState(null);
@@ -1159,9 +1159,19 @@ function AgentMemoryPanel() {
   const [editingLesson, setEditingLesson] = useState("");
 
   const loadMemories = useCallback(async () => {
+    if (!adminToken.trim()) {
+      setExperiences([]);
+      setSummary(null);
+      setMatches(null);
+      setError("Enter the server-configured admin token to view memory. Full episode contents are not public.");
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
-      const response = await fetch(`${API_URL}/memory?limit=25`);
+      const response = await fetch(`${API_URL}/memory?limit=25`, {
+        headers: { "X-Admin-Token": adminToken },
+      });
       const body = await response.json();
       if (!response.ok) throw new Error(body.detail || `Unable to load memory (HTTP ${response.status})`);
       setExperiences(body.data?.experiences || []);
@@ -1172,9 +1182,7 @@ function AgentMemoryPanel() {
     } finally {
       setLoading(false);
     }
-  }, []);
-
-  useEffect(() => { loadMemories(); }, [loadMemories]);
+  }, [adminToken]);
 
   const searchMemories = async (event) => {
     event.preventDefault();
@@ -1182,8 +1190,14 @@ function AgentMemoryPanel() {
       setMatches(null);
       return;
     }
+    if (!adminToken.trim()) {
+      setError("Enter the server-configured admin token to search memory.");
+      return;
+    }
     try {
-      const response = await fetch(`${API_URL}/memory/search?q=${encodeURIComponent(query.trim())}&limit=10`);
+      const response = await fetch(`${API_URL}/memory/search?q=${encodeURIComponent(query.trim())}&limit=10`, {
+        headers: { "X-Admin-Token": adminToken },
+      });
       const body = await response.json();
       if (!response.ok) throw new Error(body.detail || `Search failed (HTTP ${response.status})`);
       setMatches(body.data?.matches || []);
@@ -1259,9 +1273,8 @@ function AgentMemoryPanel() {
         <button type="button" onClick={loadMemories} style={smallButton}>↻ REFRESH</button>
       </div>
       <p style={{ color: COLORS.gray, fontSize: "10px", lineHeight: 1.6 }}>
-        Saved episodes survive API restarts when the configured database uses persistent storage.
-        These are observed outcomes and reviewable lessons—not hidden reasoning or proof of cause.
-        The deployed DQN is inference-only; these records do not directly change its policy.
+        STORAGE WARNING: Hosted SQLite durability is unverified. On Render Free, local database and model files can be lost during redeploys, restarts, or idle spin-down. Treat hosted memory as temporary; this panel is not a backup or a restart-persistence test.
+        These are observed outcomes and reviewable lessons—not hidden reasoning or proof of cause. The deployed DQN is inference-only; stored episodes do not directly update its policy.
       </p>
       {summary && (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: "8px", marginBottom: "12px" }}>
@@ -1321,7 +1334,7 @@ function AgentMemoryPanel() {
         ))}
       </div>
       <div style={{ borderTop: `1px solid ${COLORS.border}`, marginTop: "14px", paddingTop: "12px" }}>
-        <div style={{ color: COLORS.gray, fontSize: "9px", marginBottom: "6px" }}>ADMIN CONTROLS · TOKEN IS SENT TO THE SERVER ONLY WHEN YOU USE A PROTECTED ACTION</div>
+        <div style={{ color: COLORS.gray, fontSize: "9px", marginBottom: "6px" }}>PRIVATE MEMORY ACCESS · TOKEN IS SENT ONLY IN AUTHENTICATED REQUEST HEADERS</div>
         <input type="password" autoComplete="off" aria-label="Memory admin token" value={adminToken} onChange={e => setAdminToken(e.target.value)} placeholder="Server-configured admin token" style={{ ...fieldStyle, width: "100%", boxSizing: "border-box" }} />
         <button type="button" onClick={resetMemories} style={{ ...smallButton, borderColor: COLORS.red, color: COLORS.red, marginTop: "8px" }}>RESET ALL MEMORY…</button>
       </div>

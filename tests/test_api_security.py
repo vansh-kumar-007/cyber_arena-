@@ -72,8 +72,9 @@ def api_client(monkeypatch):
     sys.modules.pop("api.main", None)
 
 
-def test_health_and_read_only_memory_routes(api_client):
+def test_health_and_read_only_memory_routes(api_client, monkeypatch):
     client, _ = api_client
+    monkeypatch.setenv("CYBERARENA_ADMIN_TOKEN", "test-secret")
     health = client.get("/health")
     assert health.status_code == 200
     assert health.json()["status"] == "ok"
@@ -86,10 +87,14 @@ def test_health_and_read_only_memory_routes(api_client):
     assert health.json()["loaded_model_id"] == "legacy:test-attacker|test-defender"
     assert health.json()["model_registry_error"] is False
 
-    response = client.get("/memory?limit=10")
+    assert client.get("/memory?limit=10").status_code == 403
+    assert client.get("/memory/search?q=observation").status_code == 403
+    headers = {"X-Admin-Token": "test-secret"}
+    response = client.get("/memory?limit=10", headers=headers)
     assert response.status_code == 200
     assert response.json()["data"]["summary"]["total_experiences"] == 1
     assert response.json()["data"]["experiences"][0]["lesson"] == "This is a sample persisted observation."
+    assert client.get("/memory/search?q=observation", headers=headers).status_code == 200
 
 
 def test_memory_mutations_require_server_token_and_reset_confirmation(api_client, monkeypatch):
@@ -178,3 +183,16 @@ def test_health_marks_external_registry_promotion_not_ready_until_loaded(api_cli
     assert response.json()["active_model_id"] == "candidate-v2"
     assert response.json()["loaded_model_id"] == "stable-v1"
     assert response.json()["policy_consistent"] is False
+
+
+def test_step_and_weights_fail_closed_without_a_consistent_policy(api_client, monkeypatch):
+    client, api_module = api_client
+    original_status = api_module.sim.status
+    def status_without_ready_policy():
+        return {**original_status(), "models_loaded": False, "policy_consistent": False, "model_registry_error": False}
+    monkeypatch.setattr(api_module.sim, "status", status_without_ready_policy)
+    step = client.post("/step")
+    weights = client.get("/weights")
+    assert step.status_code == 503
+    assert "will not serve randomly initialized weights" in step.json()["detail"]
+    assert weights.status_code == 503

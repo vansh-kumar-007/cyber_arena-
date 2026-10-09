@@ -1,6 +1,7 @@
 """Small CPU-only integration smoke test for training, replay, and checkpoints."""
 from __future__ import annotations
 
+import json
 import random
 
 import pytest
@@ -47,6 +48,15 @@ def test_short_run_trains_and_persists_replay_and_checkpoints(tmp_path, monkeypa
     # Short runs also write the separate latest-state pair required by resume=True.
     assert (tmp_path / "models" / "marl_2v2_attacker.pt").is_file()
     assert (tmp_path / "models" / "marl_2v2_defender.pt").is_file()
+    reports=list((tmp_path/"models"/"reports").glob("training_2v2_seed-2026_*.json"))
+    assert len(reports)==1
+    report=json.loads(reports[0].read_text(encoding="utf-8"))
+    assert report["run_status"]=="completed"
+    assert report["training_config"]["seed"]==2026
+    assert report["training_config"]["episodes_completed_this_run"]==10
+    assert report["metrics_summary"]["attacker_win_rate"] is not None
+    assert len(report["checkpoint_artifacts"]["attacker_candidate"]["sha256"])==64
+    assert len(report["checkpoint_artifacts"]["defender_candidate"]["sha256"])==64
 
     # The API must load the requested scenario's checkpoint pair.
     manager = SimulationManager(memory=memory, model_dir=tmp_path / "models", seed=2026)

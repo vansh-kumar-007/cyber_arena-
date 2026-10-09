@@ -55,15 +55,22 @@ class MemoryLessonUpdate(BaseModel):
 
 
 def require_admin(token: str | None) -> None:
-    """Protect memory mutation endpoints; never ship this token in browser code."""
+    """Protect memory contents and mutation endpoints with a server-side token."""
     expected = os.getenv("CYBERARENA_ADMIN_TOKEN")
     if not expected:
-        raise HTTPException(
-            status_code=503,
-            detail="Memory administration is disabled; configure CYBERARENA_ADMIN_TOKEN on the server.",
-        )
+        raise HTTPException(status_code=503, detail="Memory access is disabled; configure CYBERARENA_ADMIN_TOKEN on the server.")
     if token is None or not secrets.compare_digest(token, expected):
         raise HTTPException(status_code=403, detail="Valid X-Admin-Token required.")
+
+
+def require_ready_policy() -> None:
+    status = sim.status()
+    if (status.get("models_loaded") is not True or status.get("policy_consistent") is not True
+            or status.get("model_registry_error") is True):
+        raise HTTPException(status_code=503, detail=(
+            "No verified trained policy is ready. Check /health and restore a compatible "
+            "checkpoint pair; the API will not serve randomly initialized weights."
+        ))
 
 
 @app.get("/")
@@ -125,16 +132,18 @@ def reset_simulation(request: ResetRequest | None = None):
 
 @app.post("/step")
 def step_simulation():
-    """Run one DQN decision step and persist its observed outcomes."""
+    """Run one DQN decision step only when verified trained weights are loaded."""
     with simulation_lock:
+        require_ready_policy()
         result = sim.step()
     return {"success": True, "data": result}
 
 
 @app.get("/weights")
 def get_weights():
-    """Get model weights for the technical visualizer."""
+    """Get model weights only when a verified policy is ready."""
     with simulation_lock:
+        require_ready_policy()
         weights = sim.get_network_weights()
     return {"success": True, "data": weights}
 
@@ -150,8 +159,10 @@ def get_status():
 def get_memory(
     limit: int = Query(default=50, ge=1, le=500),
     agent: Literal["attacker", "defender"] | None = None,
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
 ):
-    """List saved experience records for review; read-only without admin credentials."""
+    """List potentially sensitive episode records after administrator authentication."""
+    require_admin(x_admin_token)
     entries = sim.memory.list(limit=limit, agent=agent)
     return {"success": True, "data": {"summary": sim.memory.summary(), "experiences": entries}}
 
@@ -161,8 +172,10 @@ def search_memory(
     q: str = Query(min_length=1, max_length=500),
     limit: int = Query(default=5, ge=1, le=50),
     agent: Literal["attacker", "defender"] | None = None,
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
 ):
-    """Retrieve lexical precedents. This is not an embedding-based semantic search."""
+    """Retrieve lexical precedents after administrator authentication."""
+    require_admin(x_admin_token)
     try:
         matches = sim.memory.retrieve(q, agent=agent, limit=limit)
     except ValueError as exc:
