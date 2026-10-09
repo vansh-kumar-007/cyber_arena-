@@ -53,6 +53,33 @@ class SimulationManager:
     def _load_models(self) -> bool:
         """Load the first complete and architecture-compatible checkpoint pair."""
         context = f"{self.env.n_attackers}v{self.env.n_defenders}"
+        active_pointer = self.model_dir / "registry" / "active.json"
+        if active_pointer.exists():
+            # Once registry-managed promotion is enabled, never silently fall back
+            # to legacy filenames if the active pointer/checkpoint is invalid.
+            from utils.model_registry import ModelRegistry
+
+            registry = ModelRegistry(self.model_dir)
+            try:
+                active = registry.active_model()
+                if active is None:
+                    raise RuntimeError("active model pointer disappeared")
+                if active.get("scenario_context") != context:
+                    logger.warning("Active model %s is for %s, not %s",
+                                   active.get("model_id"), active.get("scenario_context"), context)
+                    return False
+                candidate_attacker = DQNAttacker(state_size=self.state_size)
+                candidate_defender = DQNDefender(state_size=self.state_size)
+                candidate_attacker.load(str(self.model_dir / active["attacker_path"]))
+                candidate_defender.load(str(self.model_dir / active["defender_path"]))
+                self.attacker = candidate_attacker
+                self.defender = candidate_defender
+                logger.info("Loaded registry active model %s", active["model_id"])
+                return True
+            except Exception:
+                logger.exception("Active model registry is invalid; refusing legacy/random fallback")
+                return False
+
         model_options = [
             (f"final_marl_attacker_{context}.pt", f"final_marl_defender_{context}_defender.pt"),
             (f"marl_{context}_attacker.pt", f"marl_{context}_defender.pt"),
