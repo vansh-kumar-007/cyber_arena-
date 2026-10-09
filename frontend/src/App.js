@@ -1338,6 +1338,7 @@ export default function App() {
   const intervalRef = useRef(null);
   const [useRealAI, setUseRealAI] = useState(false);
   const [apiConnected, setApiConnected] = useState(false);
+  const [apiError, setApiError] = useState("");
   const [showAgentMemory, setShowAgentMemory] = useState(false);
 
 const saveSession = useCallback((state, log) => {
@@ -1405,13 +1406,22 @@ const saveSession = useCallback((state, log) => {
     });
   };
 
-  // Check API connection on load
-  useEffect(() => {
-    fetch(`${API_URL}/status`)
-      .then(r => r.json())
-      .then(() => setApiConnected(true))
-      .catch(() => setApiConnected(false));
+  const checkApiHealth = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_URL}/health`);
+      if (!response.ok) throw new Error(`Backend returned HTTP ${response.status}`);
+      await response.json();
+      setApiConnected(true);
+      setApiError("");
+    } catch (error) {
+      setApiConnected(false);
+      setApiError("The DQN API is unreachable. SIM mode remains available; start/check the backend, then retry before selecting REAL DQN.");
+    }
   }, []);
+
+  useEffect(() => {
+    checkApiHealth();
+  }, [checkApiHealth]);
 
   useEffect(() => {
     if (!gameState.isRunning) {
