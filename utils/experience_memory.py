@@ -1,8 +1,8 @@
-"""Persistent, auditable episodic memory for CyberArena agents.
+"""Auditable local episodic memory for CyberArena agents.
 
-This is reflection/retrieval memory, not online policy learning: experiences are
-recorded with outcomes and lessons; callers may retrieve relevant precedents.
-SQLite is used so records survive restarts without an external service.
+This is reflection/retrieval memory, not online policy learning. SQLite provides
+transactional local storage; restart/deploy durability depends on the host filesystem
+and is deliberately not assumed.
 """
 from __future__ import annotations
 
@@ -343,7 +343,7 @@ class ExperienceMemory:
                 raise
         return {"experiences_imported":len(normalized_exp),"replay_transitions_imported":len(normalized_transitions),"format_version":1}
 
-    def close(self) -> None
+    def close(self) -> None:
         with self._lock:
             self._connection.close()
 
