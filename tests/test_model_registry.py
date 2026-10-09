@@ -192,7 +192,8 @@ def test_registry_rejects_stale_baseline_and_safety_failures(tmp_path):
     _active_baseline(registry)
     _candidate(registry, "candidate-v2")
 
-    stale_baseline = _comparison_metrics(registry, "candidate-v2", baseline_model_id="missing-baseline")
+    stale_baseline = _comparison_metrics(registry, "candidate-v2")
+    stale_baseline["baseline_model_id"] = "missing-baseline"
     result = _evaluate_candidate(registry, "candidate-v2", metrics_override=stale_baseline)
     assert result["status"] == "rejected"
     assert any("registered stable baseline" in item for item in result["evaluation"]["rejection_reasons"])
