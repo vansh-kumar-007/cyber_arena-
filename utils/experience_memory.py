@@ -7,6 +7,7 @@ SQLite is used so records survive restarts without an external service.
 from __future__ import annotations
 
 import json
+import math
 import os
 import sqlite3
 import threading
@@ -58,6 +59,20 @@ class ExperienceMemory:
                     ON experiences(agent, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_experiences_outcome
                     ON experiences(outcome, created_at DESC);
+                CREATE TABLE IF NOT EXISTS replay_transitions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    agent TEXT NOT NULL CHECK (agent IN ('attacker', 'defender')),
+                    context TEXT NOT NULL,
+                    experience_id TEXT REFERENCES experiences(id) ON DELETE CASCADE,
+                    state TEXT NOT NULL,
+                    action INTEGER NOT NULL CHECK (action >= 0),
+                    reward REAL NOT NULL,
+                    next_state TEXT NOT NULL,
+                    terminal INTEGER NOT NULL CHECK (terminal IN (0, 1))
+                );
+                CREATE INDEX IF NOT EXISTS idx_replay_context
+                    ON replay_transitions(agent, context, id DESC);
                 """
             )
             self._connection.commit()
@@ -121,6 +136,89 @@ class ExperienceMemory:
                 except json.JSONDecodeError:
                     pass
         return result
+
+    def remember_transition(
+        self,
+        *,
+        agent: str,
+        context: str,
+        state: Iterable[float],
+        action: int,
+        reward: float,
+        next_state: Iterable[float],
+        terminal: bool,
+        experience_id: str | None = None,
+        capacity: int = 10000,
+    ) -> None:
+        """Persist a transition in a bounded replay store for future DQN updates.
+
+        Replay is partitioned by team and scenario (for example, 1v1 vs 3v2)
+        so differently trained checkpoints do not silently mix their experiences.
+        """
+        if agent not in ("attacker", "defender"):
+            raise ValueError("agent must be attacker or defender")
+        if not isinstance(context, str) or not context.strip():
+            raise ValueError("context must be a non-empty string")
+        if not isinstance(action, int) or isinstance(action, bool) or action < 0:
+            raise ValueError("action must be a non-negative integer")
+        if not isinstance(capacity, int) or isinstance(capacity, bool) or not 1 <= capacity <= 100000:
+            raise ValueError("capacity must be between 1 and 100000")
+        state_values = [float(value) for value in state]
+        next_values = [float(value) for value in next_state]
+        if not state_values or len(state_values) != len(next_values):
+            raise ValueError("state and next_state must be non-empty and have equal dimensions")
+        if not all(math.isfinite(value) for value in (*state_values, *next_values)):
+            raise ValueError("state values must be finite numbers")
+        if isinstance(reward, bool) or not isinstance(reward, (int, float)) or not math.isfinite(float(reward)):
+            raise ValueError("reward must be a finite number")
+        if not isinstance(terminal, bool):
+            raise ValueError("terminal must be a boolean")
+        entry = (
+            datetime.now(timezone.utc).isoformat(), agent, context.strip(), experience_id,
+            _json(state_values), action, float(reward), _json(next_values), int(terminal),
+        )
+        with self._lock, self._connection:
+            self._connection.execute(
+                """INSERT INTO replay_transitions
+                   (created_at, agent, context, experience_id, state, action, reward,
+                    next_state, terminal)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                entry,
+            )
+            self._connection.execute(
+                """DELETE FROM replay_transitions
+                   WHERE agent = ? AND context = ? AND id NOT IN (
+                       SELECT id FROM replay_transitions
+                       WHERE agent = ? AND context = ?
+                       ORDER BY id DESC LIMIT ?
+                   )""",
+                (agent, context.strip(), agent, context.strip(), capacity),
+            )
+
+    def load_transitions(
+        self, *, agent: str, context: str, limit: int = 10000
+    ) -> list[dict[str, Any]]:
+        """Return a replay partition in chronological order for deterministic reload."""
+        if agent not in ("attacker", "defender"):
+            raise ValueError("agent must be attacker or defender")
+        if not 1 <= limit <= 10000:
+            raise ValueError("limit must be between 1 and 10000")
+        with self._lock:
+            rows = self._connection.execute(
+                """SELECT state, action, reward, next_state, terminal
+                   FROM replay_transitions
+                   WHERE agent = ? AND context = ?
+                   ORDER BY id DESC LIMIT ?""",
+                (agent, context, limit),
+            ).fetchall()
+        rows.reverse()
+        return [{
+            "state": json.loads(row["state"]),
+            "action": int(row["action"]),
+            "reward": float(row["reward"]),
+            "next_state": json.loads(row["next_state"]),
+            "terminal": bool(row["terminal"]),
+        } for row in rows]
 
     def list(self, limit: int = 50, *, agent: str | None = None) -> list[dict[str, Any]]:
         if not 1 <= limit <= 500:
@@ -194,6 +292,7 @@ class ExperienceMemory:
         return self._public(row)
 
     def delete(self, experience_id: str) -> bool:
+        """Delete the audit record and any replay transition linked to it."""
         with self._lock, self._connection:
             cursor = self._connection.execute(
                 "DELETE FROM experiences WHERE id = ?", (experience_id,)
@@ -201,10 +300,17 @@ class ExperienceMemory:
             return cursor.rowcount > 0
 
     def reset(self) -> int:
-        """Delete all stored experiences. UI/API must require explicit confirmation."""
+        """Delete all episode records and all replay transitions."""
         with self._lock, self._connection:
-            cursor = self._connection.execute("DELETE FROM experiences")
-            return cursor.rowcount
+            transition_count = self._connection.execute(
+                "SELECT COUNT(*) FROM replay_transitions"
+            ).fetchone()[0]
+            experience_count = self._connection.execute(
+                "SELECT COUNT(*) FROM experiences"
+            ).fetchone()[0]
+            self._connection.execute("DELETE FROM replay_transitions")
+            self._connection.execute("DELETE FROM experiences")
+            return int(transition_count + experience_count)
 
     def summary(self) -> dict[str, Any]:
         with self._lock:
@@ -215,6 +321,16 @@ class ExperienceMemory:
                    SUM(CASE WHEN lesson_status = 'active' THEN 1 ELSE 0 END) AS active_lessons
                    FROM experiences"""
             ).fetchone()
+        with self._lock:
+            replay_count = self._connection.execute(
+                "SELECT COUNT(*) FROM replay_transitions"
+            ).fetchone()[0]
+            replay_by_agent = {
+                item["agent"]: item["count"]
+                for item in self._connection.execute(
+                    "SELECT agent, COUNT(*) AS count FROM replay_transitions GROUP BY agent"
+                ).fetchall()
+            }
         total = row["total"] or 0
         successes = row["successes"] or 0
         failures = row["failures"] or 0
@@ -223,6 +339,8 @@ class ExperienceMemory:
             "successful_outcomes": successes,
             "failed_outcomes": failures,
             "active_lessons": row["active_lessons"] or 0,
+            "persisted_replay_transitions": replay_count,
+            "replay_transitions_by_agent": replay_by_agent,
             "observed_success_rate": successes / (successes + failures) if successes + failures else None,
-            "note": "Observed stored outcomes only; this is not a controlled learning benchmark.",
+            "note": "Observed outcome counts are not a controlled learning benchmark; replay transitions are used by resumed DQN training when loaded.",
         }
