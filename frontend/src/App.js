@@ -3,9 +3,15 @@ import { motion, AnimatePresence } from "framer-motion";
 
 // ─── API CONFIG ───────────────────────────────────────────────────────────────
 const API_URL = process.env.REACT_APP_API_URL || "http://localhost:8000";
-async function apiCall(endpoint, method = "GET") {
+async function apiCall(endpoint, method = "GET", body = undefined) {
   try {
-    const res = await fetch(`${API_URL}${endpoint}`, { method });
+    const options = { method };
+    if (body !== undefined) {
+      options.headers = { "Content-Type": "application/json" };
+      options.body = JSON.stringify(body);
+    }
+    const res = await fetch(`${API_URL}${endpoint}`, options);
+    if (!res.ok) return null;
     const data = await res.json();
     return data.data;
   } catch (e) {
@@ -638,7 +644,7 @@ function NeuralNetModal({ onClose, lastAttack, lastDefense, step }) {
             transition={{ duration: 2, repeat: Infinity }}
             style={{ color: COLORS.green, fontFamily: PIXEL_FONT, fontSize: "14px", letterSpacing: "4px" }}
           >
-            ► DQN NEURAL NETWORK — LIVE VIEW
+            ► DQN NETWORK — SCHEMATIC VIEW
           </motion.div>
           <motion.button
             whileHover={{ scale: 1.1, boxShadow: `0 0 12px ${COLORS.red}` }}
@@ -659,7 +665,7 @@ function NeuralNetModal({ onClose, lastAttack, lastDefense, step }) {
           marginBottom: "16px", flexWrap: "wrap"
         }}>
           {[
-            { label: "ARCHITECTURE", value: "29 → 128 → 128 → 12", color: COLORS.green },
+            { label: "ARCHITECTURE", value: "37 → 128 → 128 → 12", color: COLORS.green },
             { label: "ALGORITHM", value: "Deep Q-Network (DQN)", color: COLORS.purple },
             { label: "OPTIMIZER", value: "Adam (lr=0.0005)", color: COLORS.blue },
             { label: "REPLAY BUFFER", value: "10,000 experiences", color: COLORS.yellow },
@@ -761,14 +767,14 @@ function NeuralNetVisualizer({ lastAttack, lastDefense, step }) {
               color: COLORS.gray, fontFamily: PIXEL_FONT,
               fontSize: "9px", letterSpacing: "2px"
             }}>
-              ► DQN NEURAL NETWORK — LIVE
+              ► DQN STRUCTURE — ILLUSTRATIVE
             </div>
             <motion.div
               animate={{ opacity: [1, 0.3, 1] }}
               transition={{ duration: 1.5, repeat: Infinity }}
               style={{ color: COLORS.green, fontFamily: PIXEL_FONT, fontSize: "8px" }}
             >
-              🔍 CLICK TO EXPAND
+              SCHEMATIC · CLICK TO EXPAND
             </motion.div>
           </div>
 
@@ -1140,6 +1146,188 @@ function LogViewer({ sessions, onClose }) {
   );
 }
 
+function AgentMemoryPanel() {
+  const [experiences, setExperiences] = useState([]);
+  const [summary, setSummary] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [query, setQuery] = useState("");
+  const [matches, setMatches] = useState(null);
+  const [adminToken, setAdminToken] = useState("");
+  const [editingId, setEditingId] = useState(null);
+  const [editingLesson, setEditingLesson] = useState("");
+
+  const loadMemories = useCallback(async () => {
+    setLoading(true);
+    try {
+      const response = await fetch(`${API_URL}/memory?limit=25`);
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail || `Unable to load memory (HTTP ${response.status})`);
+      setExperiences(body.data?.experiences || []);
+      setSummary(body.data?.summary || null);
+      setError("");
+    } catch (err) {
+      setError(err.message || "Memory service is unavailable.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadMemories(); }, [loadMemories]);
+
+  const searchMemories = async (event) => {
+    event.preventDefault();
+    if (!query.trim()) {
+      setMatches(null);
+      return;
+    }
+    try {
+      const response = await fetch(`${API_URL}/memory/search?q=${encodeURIComponent(query.trim())}&limit=10`);
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail || `Search failed (HTTP ${response.status})`);
+      setMatches(body.data?.matches || []);
+      setError("");
+    } catch (err) {
+      setError(err.message || "Memory search failed.");
+    }
+  };
+
+  const adminRequest = async (path, method, payload) => {
+    if (!adminToken.trim()) {
+      setError("Enter the server-configured admin token to change stored memories.");
+      return;
+    }
+    try {
+      const response = await fetch(`${API_URL}${path}`, {
+        method,
+        headers: {
+          "Content-Type": "application/json",
+          "X-Admin-Token": adminToken,
+        },
+        body: payload === undefined ? undefined : JSON.stringify(payload),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || `Request failed (HTTP ${response.status})`);
+      setError("");
+      setEditingId(null);
+      await loadMemories();
+      return body.data;
+    } catch (err) {
+      setError(err.message || "Memory administration failed.");
+    }
+  };
+
+  const resetMemories = async () => {
+    if (window.confirm("Permanently delete every saved agent experience? This cannot be undone.")) {
+      await adminRequest("/memory?confirm=true", "DELETE");
+    }
+  };
+
+  const displayed = matches === null ? experiences : matches;
+  const panelStyle = {
+    background: COLORS.panel,
+    border: `1px solid ${COLORS.border}`,
+    borderRadius: "6px",
+    padding: "14px",
+    margin: "12px 0",
+    fontFamily: PIXEL_FONT,
+  };
+  const smallButton = {
+    background: "transparent",
+    border: `1px solid ${COLORS.green}`,
+    color: COLORS.green,
+    fontFamily: PIXEL_FONT,
+    fontSize: "9px",
+    padding: "5px 8px",
+    cursor: "pointer",
+  };
+  const fieldStyle = {
+    background: COLORS.bg,
+    color: COLORS.white,
+    border: `1px solid ${COLORS.border}`,
+    padding: "7px",
+    fontFamily: PIXEL_FONT,
+    fontSize: "10px",
+    minWidth: 0,
+  };
+
+  return (
+    <section style={panelStyle} aria-label="Agent memory and learning">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+        <div style={{ color: COLORS.green, fontSize: "12px", letterSpacing: "2px" }}>AGENT MEMORY & LEARNING</div>
+        <button type="button" onClick={loadMemories} style={smallButton}>↻ REFRESH</button>
+      </div>
+      <p style={{ color: COLORS.gray, fontSize: "10px", lineHeight: 1.6 }}>
+        Saved episodes survive API restarts when the configured database uses persistent storage.
+        These are observed outcomes and reviewable lessons—not hidden reasoning or proof of cause.
+        The deployed DQN is inference-only; these records do not directly change its policy.
+      </p>
+      {summary && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: "8px", marginBottom: "12px" }}>
+          {[
+            ["EXPERIENCES", summary.total_experiences ?? 0],
+            ["SUCCESSFUL OUTCOMES", summary.successful_outcomes ?? 0],
+            ["FAILED OUTCOMES", summary.failed_outcomes ?? 0],
+            ["ACTIVE LESSONS", summary.active_lessons ?? 0],
+            ["OBSERVED SUCCESS", summary.observed_success_rate == null ? "—" : `${(summary.observed_success_rate * 100).toFixed(1)}%`],
+          ].map(([label, value]) => (
+            <div key={label} style={{ border: `1px solid ${COLORS.border}`, padding: "8px" }}>
+              <div style={{ color: COLORS.gray, fontSize: "8px", marginBottom: "5px" }}>{label}</div>
+              <div style={{ color: COLORS.white, fontSize: "14px" }}>{value}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      <form onSubmit={searchMemories} style={{ display: "flex", gap: "8px", marginBottom: "10px" }}>
+        <input aria-label="Search stored lessons" value={query} onChange={e => setQuery(e.target.value)} placeholder="Search actions, nodes, failures, lessons…" style={{ ...fieldStyle, flex: 1 }} />
+        <button type="submit" style={smallButton}>SEARCH</button>
+        {matches !== null && <button type="button" style={smallButton} onClick={() => setMatches(null)}>CLEAR</button>}
+      </form>
+      {error && <div role="alert" style={{ color: COLORS.orange, fontSize: "10px", padding: "8px 0" }}>{error}</div>}
+      {loading && <div style={{ color: COLORS.gray, fontSize: "10px" }}>Loading saved experiences…</div>}
+      {!loading && displayed.length === 0 && <div style={{ color: COLORS.gray, fontSize: "10px" }}>No stored experiences match this view yet. Start a REAL DQN battle to record outcomes.</div>}
+      <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+        {displayed.map(entry => (
+          <article key={entry.id} style={{ border: `1px solid ${COLORS.border}`, padding: "10px", borderLeft: `3px solid ${entry.outcome === "failure" ? COLORS.red : entry.outcome === "success" ? COLORS.green : COLORS.gray}` }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+              <strong style={{ color: entry.agent === "attacker" ? COLORS.red : COLORS.blue, fontSize: "10px" }}>{(entry.agent || "agent").toUpperCase()}</strong>
+              <span style={{ color: entry.outcome === "failure" ? COLORS.red : entry.outcome === "success" ? COLORS.green : COLORS.gray, fontSize: "9px" }}>
+                {(entry.outcome || "observed").toUpperCase()} · reward {entry.reward == null ? "n/a" : Number(entry.reward).toFixed(2)}
+              </span>
+              <span style={{ color: COLORS.gray, fontSize: "8px" }}>{entry.created_at ? new Date(entry.created_at).toLocaleString() : ""}</span>
+            </div>
+            <div style={{ color: COLORS.white, fontSize: "10px", margin: "7px 0" }}>{entry.task}</div>
+            {editingId === entry.id ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                <textarea aria-label="Edit stored lesson" value={editingLesson} onChange={e => setEditingLesson(e.target.value)} maxLength={4000} rows={3} style={{ ...fieldStyle, resize: "vertical" }} />
+                <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                  <button type="button" style={smallButton} onClick={() => adminRequest(`/memory/${encodeURIComponent(entry.id)}`, "PATCH", { lesson: editingLesson })}>SAVE LESSON</button>
+                  <button type="button" style={smallButton} onClick={() => setEditingId(null)}>CANCEL</button>
+                </div>
+              </div>
+            ) : <div style={{ color: COLORS.gray, fontSize: "9px", lineHeight: 1.6 }}>{entry.lesson}</div>}
+            {entry.error_type && <div style={{ color: COLORS.orange, fontSize: "9px", marginTop: "5px" }}>Issue: {entry.error_type}</div>}
+            <div style={{ display: "flex", gap: "6px", marginTop: "8px", flexWrap: "wrap" }}>
+              <button type="button" style={smallButton} onClick={() => { setEditingId(entry.id); setEditingLesson(entry.lesson || ""); }}>EDIT LESSON</button>
+              <button type="button" style={smallButton} onClick={() => adminRequest(`/memory/${encodeURIComponent(entry.id)}`, "PATCH", { lesson_status: entry.lesson_status === "deprecated" ? "active" : "deprecated" })}>
+                {entry.lesson_status === "deprecated" ? "REACTIVATE" : "DEPRECATE"}
+              </button>
+              <button type="button" style={{ ...smallButton, borderColor: COLORS.red, color: COLORS.red }} onClick={() => {
+                if (window.confirm("Delete this experience permanently?")) adminRequest(`/memory/${encodeURIComponent(entry.id)}`, "DELETE");
+              }}>DELETE</button>
+            </div>
+          </article>
+        ))}
+      </div>
+      <div style={{ borderTop: `1px solid ${COLORS.border}`, marginTop: "14px", paddingTop: "12px" }}>
+        <div style={{ color: COLORS.gray, fontSize: "9px", marginBottom: "6px" }}>ADMIN CONTROLS · TOKEN IS SENT TO THE SERVER ONLY WHEN YOU USE A PROTECTED ACTION</div>
+        <input type="password" autoComplete="off" aria-label="Memory admin token" value={adminToken} onChange={e => setAdminToken(e.target.value)} placeholder="Server-configured admin token" style={{ ...fieldStyle, width: "100%", boxSizing: "border-box" }} />
+        <button type="button" onClick={resetMemories} style={{ ...smallButton, borderColor: COLORS.red, color: COLORS.red, marginTop: "8px" }}>RESET ALL MEMORY…</button>
+      </div>
+    </section>
+  );
+}
+
 export default function App() {
   const [gameState, setGameState] = useState({
     ...initialState,
@@ -1156,6 +1344,9 @@ export default function App() {
   const intervalRef = useRef(null);
   const [useRealAI, setUseRealAI] = useState(false);
   const [apiConnected, setApiConnected] = useState(false);
+  const [modelsLoaded, setModelsLoaded] = useState(false);
+  const [apiError, setApiError] = useState("");
+  const [showAgentMemory, setShowAgentMemory] = useState(false);
 
 const saveSession = useCallback((state, log) => {
   const winner = state.redScore > state.blueScore ? "RED" : "BLUE";
@@ -1185,11 +1376,23 @@ const saveSession = useCallback((state, log) => {
 
   const startGame = async () => {
     if (useRealAI && apiConnected) {
-      try {
-        await apiCall("/reset", "POST");
-      } catch(e) {
-        console.log("Reset failed, continuing anyway");
+      const resetData = await apiCall("/reset", "POST", {
+        n_attackers: gameState.nAttackers,
+        n_defenders: gameState.nDefenders,
+      });
+      if (!resetData) {
+        setApiConnected(false);
+        setUseRealAI(false);
+        setApiError("The backend could not reset the requested DQN scenario. Check the API connection and retry.");
+        return;
       }
+      setModelsLoaded(Boolean(resetData.models_loaded));
+      if (!resetData.models_loaded) {
+        setUseRealAI(false);
+        setApiError(`No trained checkpoint pair is available for ${gameState.nAttackers}v${gameState.nDefenders}. Train that scenario or choose SIM mode; the real-DQN match was not started.`);
+        return;
+      }
+      setApiError("");
     }
     setGameState(prev => ({
       ...prev,
@@ -1203,6 +1406,8 @@ const saveSession = useCallback((state, log) => {
       battleLog: [],
       redRewards: [],
       blueRewards: [],
+      episodeDone: false,
+      decisionContext: null,
     }));
   };
 
@@ -1220,13 +1425,28 @@ const saveSession = useCallback((state, log) => {
     });
   };
 
-  // Check API connection on load
-  useEffect(() => {
-    fetch(`${API_URL}/status`)
-      .then(r => r.json())
-      .then(() => setApiConnected(true))
-      .catch(() => setApiConnected(false));
+  const checkApiHealth = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_URL}/health`);
+      if (!response.ok) throw new Error(`Backend returned HTTP ${response.status}`);
+      const health = await response.json();
+      setApiConnected(true);
+      setModelsLoaded(Boolean(health.models_loaded));
+      if (health.models_loaded) {
+        setApiError("");
+      } else {
+        setApiError("The API is reachable, but no compatible trained checkpoint is loaded for its current scenario. REAL DQN will verify the selected team size before starting.");
+      }
+    } catch (error) {
+      setApiConnected(false);
+      setModelsLoaded(false);
+      setApiError("The DQN API is unreachable. SIM mode remains available; start/check the backend, then retry before selecting REAL DQN.");
+    }
   }, []);
+
+  useEffect(() => {
+    checkApiHealth();
+  }, [checkApiHealth]);
 
   useEffect(() => {
     if (!gameState.isRunning) {
@@ -1240,7 +1460,13 @@ const saveSession = useCallback((state, log) => {
         // ── REAL DQN MODE ──────────────────────────────────────
         try {
           const data = await apiCall("/step", "POST");
-          if (!data) return;
+          if (!data) {
+            setApiConnected(false);
+            setUseRealAI(false);
+            setApiError("The DQN API request failed, so the match was paused instead of silently switching to a mock simulation. Check the backend and retry.");
+            setGameState(prev => ({ ...prev, isRunning: false }));
+            return;
+          }
 
           const s = data.state;
           const attack = ATTACKS[data.att_action] || null;
@@ -1268,6 +1494,8 @@ const saveSession = useCallback((state, log) => {
               redScore: newRedScore,
               blueScore: newBlueScore,
               step: data.step || prev.step + 1,
+              episodeDone: !!data.done,
+              decisionContext: data.decision_context || prev.decisionContext,
               lastAttack: attack,
               lastDefense: defense,
               lastEvent: null,
@@ -1285,8 +1513,10 @@ const saveSession = useCallback((state, log) => {
 
         } catch(e) {
           console.error("API step failed:", e);
-          // Fall back to simulation mode if API fails
-          setGameState(prev => runSimulationStep(prev));
+          setApiConnected(false);
+          setUseRealAI(false);
+          setApiError("The DQN API request failed and the match was paused to avoid mixing real and simulated actions.");
+          setGameState(prev => ({ ...prev, isRunning: false }));
         }
 
       } else {
@@ -1309,7 +1539,7 @@ const saveSession = useCallback((state, log) => {
 
 // Auto-save when game ends
 useEffect(() => {
-  if (!gameState.isRunning && gameState.step >= 200) {
+  if (!gameState.isRunning && (gameState.step >= 200 || gameState.episodeDone)) {
     saveSession(gameState, fullLog);
   }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1437,16 +1667,19 @@ useEffect(() => {
             }}
           >SIM</motion.button>
           <motion.button
-            whileHover={{ scale: 1.05 }}
-            onClick={() => setUseRealAI(true)}
+            whileHover={apiConnected ? { scale: 1.05 } : {}}
+            disabled={!apiConnected}
+            aria-label={!apiConnected ? "Real DQN unavailable; backend API is disconnected" : modelsLoaded ? "Enable real DQN mode" : "No trained checkpoint is loaded for the server scenario; start will verify the selected match"}
+            onClick={() => { if (apiConnected) setUseRealAI(true); }}
             style={{
               background: useRealAI ? COLORS.purple : "transparent",
-              border: `1px solid ${apiConnected ? COLORS.purple : COLORS.gray}`,
-              color: useRealAI ? COLORS.white : apiConnected ? COLORS.purple : COLORS.gray,
+              border: `1px solid ${apiConnected ? (modelsLoaded ? COLORS.purple : COLORS.orange) : COLORS.gray}`,
+              color: useRealAI ? COLORS.white : apiConnected ? (modelsLoaded ? COLORS.purple : COLORS.orange) : COLORS.gray,
               fontFamily: PIXEL_FONT, fontSize: "9px",
-              padding: "4px 10px", cursor: "pointer",
+              padding: "4px 10px", cursor: apiConnected ? "pointer" : "not-allowed",
+              opacity: apiConnected ? 1 : 0.6,
             }}
-          >🧠 REAL DQN {apiConnected ? "●" : "○"}</motion.button>
+          >🧠 REAL DQN {apiConnected ? (modelsLoaded ? "●" : "⚠") : "○"}</motion.button>
         </div>
 
       </div>
@@ -1469,6 +1702,59 @@ useEffect(() => {
         nAttackers={gameState.nAttackers}
         nDefenders={gameState.nDefenders}
       />
+
+      {apiError && (
+        <div role="alert" style={{ border: `1px solid ${COLORS.orange}`, color: COLORS.orange, background: COLORS.panel, padding: "10px", marginBottom: "10px", fontSize: "10px", lineHeight: 1.6 }}>
+          {apiError}
+          <button type="button" onClick={checkApiHealth} style={{ marginLeft: "10px", background: "transparent", border: `1px solid ${COLORS.orange}`, color: COLORS.orange, fontFamily: PIXEL_FONT, fontSize: "9px", padding: "4px 8px", cursor: "pointer" }}>RETRY API</button>
+        </div>
+      )}
+      {useRealAI && gameState.decisionContext && (
+        <PixelBorder color={COLORS.purple} style={{ padding: "12px", marginBottom: "10px" }}>
+          <div style={{ color: COLORS.purple, fontSize: "10px", letterSpacing: "2px", marginBottom: "7px" }}>WHY THESE ACTIONS? · EVIDENCE SUMMARY</div>
+          <div style={{ color: COLORS.white, fontSize: "10px", lineHeight: 1.6 }}>{gameState.decisionContext.explanation}</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "10px", marginTop: "10px" }}>
+            {[
+              { name: "ATTACKER Q-VALUE ESTIMATES", items: gameState.decisionContext.attacker_top_actions || [], color: COLORS.red },
+              { name: "DEFENDER Q-VALUE ESTIMATES", items: gameState.decisionContext.defender_top_actions || [], color: COLORS.blue },
+            ].map(group => (
+              <div key={group.name} style={{ border: `1px solid ${COLORS.border}`, padding: "8px" }}>
+                <div style={{ color: group.color, fontSize: "8px", marginBottom: "6px" }}>{group.name}</div>
+                {group.items.map(item => (
+                  <div key={item.id} style={{ display: "flex", justifyContent: "space-between", gap: "8px", color: COLORS.gray, fontSize: "9px", margin: "4px 0" }}>
+                    <span>{item.name}</span><strong style={{ color: COLORS.white }}>{Number(item.q_value).toFixed(3)}</strong>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+          {(gameState.decisionContext.precedents || []).length > 0 && (
+            <details style={{ marginTop: "8px", color: COLORS.gray, fontSize: "9px" }}>
+              <summary style={{ cursor: "pointer" }}>See {gameState.decisionContext.precedents.length} related stored episode(s)</summary>
+              {(gameState.decisionContext.precedents || []).map(item => (
+                <div key={item.id} style={{ borderTop: `1px solid ${COLORS.border}`, padding: "6px 0" }}>
+                  <strong style={{ color: item.outcome === "failure" ? COLORS.red : item.outcome === "success" ? COLORS.green : COLORS.white }}>{item.agent} · {item.outcome} · reward {item.reward == null ? "n/a" : Number(item.reward).toFixed(2)}</strong>
+                  <div>{item.lesson}</div>
+                </div>
+              ))}
+              <div style={{ marginTop: "5px" }}>Historical precedents are context, not a causal explanation or a policy override.</div>
+            </details>
+          )}
+        </PixelBorder>
+      )}
+
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "10px" }}>
+        <button type="button" onClick={() => setShowAgentMemory(value => !value)} style={{
+          background: showAgentMemory ? COLORS.green : "transparent",
+          color: showAgentMemory ? COLORS.bg : COLORS.green,
+          border: `1px solid ${COLORS.green}`,
+          padding: "7px 12px",
+          fontFamily: PIXEL_FONT,
+          fontSize: "10px",
+          cursor: "pointer",
+        }}>{showAgentMemory ? "− HIDE AGENT MEMORY" : "◎ AGENT MEMORY & LEARNING"}</button>
+      </div>
+      {showAgentMemory && <AgentMemoryPanel />}
 
       {/* Main Layout */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: "12px" }}>
