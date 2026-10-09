@@ -1,4 +1,4 @@
-from scripts.evaluate_tracked_candidate_vs_production import count_critical_regressions
+from utils.policy_evaluation import count_critical_regressions
 
 
 def test_count_critical_regression_when_role_ci_is_entirely_negative():

@@ -28,6 +28,7 @@ if str(ROOT) not in sys.path:
 from configs.network_config import ATTACK_TYPES, DEFENSE_TYPES
 from env.network_env import NetworkEnvironment
 from evaluate_dqn import evaluate_pair
+from utils.policy_evaluation import count_critical_regressions
 from utils.model_registry import (
     ACTION_SCHEMA_VERSION,
     ENVIRONMENT_VERSION,
@@ -121,24 +122,6 @@ def group_deltas(
         deltas[offset:offset + episodes_per_block]
         for offset in range(0, len(deltas), episodes_per_block)
     ]
-
-
-def count_critical_regressions(
-    attacker_win_ci: dict[str, float],
-    defender_success_ci: dict[str, float],
-    *,
-    reward_acceptable: bool,
-) -> int:
-    """Count performance dimensions whose entire 95% CI shows a regression.
-
-    A CI that overlaps zero is inconclusive and fails the promotion gate, but
-    is not labelled as a demonstrated regression. A fully negative role CI or
-    reward failure counts as a critical regression for the safety record.
-    """
-    role_regressions = int(attacker_win_ci["upper_95pct"] < 0) + int(
-        defender_success_ci["upper_95pct"] < 0
-    )
-    return role_regressions + int(not reward_acceptable)
 
 
 def paired_metric(
