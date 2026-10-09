@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import random
 
-import numpy as np
 import pytest
 
 torch = pytest.importorskip("torch")
+
+import numpy as np
 
 import train_dqn
 from agents.dqn_attacker import DQNAttacker
