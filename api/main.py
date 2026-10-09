@@ -81,6 +81,7 @@ def health():
     with simulation_lock:
         status = sim.status()
     ready = bool(status["models_loaded"]) and status["memory_write_errors"] == 0
+    memory_storage = sim.memory.storage_status()
     return {
         # Keep status="ok" for backwards-compatible liveness probes. Consumers
         # that require a trained policy should gate on ready/readiness instead.
@@ -93,6 +94,7 @@ def health():
         "n_defenders": status["n_defenders"],
         "memory_available": status["memory_write_errors"] == 0,
         "memory_write_errors": status["memory_write_errors"],
+        "memory_storage": memory_storage,
     }
 
 
