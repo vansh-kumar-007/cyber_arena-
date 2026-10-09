@@ -37,12 +37,18 @@ def api_client(monkeypatch):
                 "def_memory": 0,
                 "models_loaded": True,
                 "state_size": 37,
+                "n_attackers": 1,
+                "n_defenders": 1,
                 "experience_memory": self.memory.summary(),
                 "memory_write_errors": self.memory_write_errors,
             }
 
-        def reset(self, seed=None):
-            return {"state": {}, "done": False, "step": 0, "episode": 2, "seed": seed}
+        def reset(self, seed=None, n_attackers=None, n_defenders=None):
+            return {
+                "state": {}, "done": False, "step": 0, "episode": 2, "seed": seed,
+                "n_attackers": n_attackers or 1, "n_defenders": n_defenders or 1,
+                "models_loaded": True,
+            }
 
         def step(self):
             return {"state": {}, "done": False, "step": 1, "episode": 1}
@@ -89,3 +95,17 @@ def test_memory_mutations_require_server_token_and_reset_confirmation(api_client
     assert client.delete(f"/memory/{entry_id}", headers={"X-Admin-Token": "test-secret"}).status_code == 200
     assert client.delete("/memory?confirm=false", headers={"X-Admin-Token": "test-secret"}).status_code == 400
     assert client.delete("/memory?confirm=true", headers={"X-Admin-Token": "test-secret"}).status_code == 200
+
+
+def test_reset_forwards_seed_and_requested_team_size(api_client):
+    client, _ = api_client
+    response = client.post("/reset", json={"seed": 42, "n_attackers": 3, "n_defenders": 2})
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["seed"] == 42
+    assert data["n_attackers"] == 3
+    assert data["n_defenders"] == 2
+    assert data["models_loaded"] is True
+
+    invalid = client.post("/reset", json={"n_attackers": 5, "n_defenders": 1})
+    assert invalid.status_code == 422
