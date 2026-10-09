@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import random
+import sys
 import time
 from pathlib import Path
 from statistics import mean
@@ -21,8 +22,8 @@ from typing import Any, Sequence
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in os.sys.path:
-    os.sys.path.insert(0, str(ROOT))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from configs.network_config import ATTACK_TYPES, DEFENSE_TYPES
 from env.network_env import NetworkEnvironment
