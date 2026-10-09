@@ -9,6 +9,7 @@ from configs.network_config import (
     ATTACK_TYPES, DEFENSE_TYPES
 )
 from env.reward import calculate_attacker_reward, calculate_defender_reward
+from env.state_encoder import MAX_AGENTS, encode_state
 
 class NetworkEnvironment:
     def __init__(self, n_attackers=1, n_defenders=1):
@@ -24,7 +25,10 @@ class NetworkEnvironment:
 
         self.reset()
 
-    def reset(self):
+    def reset(self, seed=None):
+        """Reset the episode; passing a seed makes subsequent environment randomness reproducible."""
+        if seed is not None:
+            self.rng.seed(seed)
         self.nodes = copy.deepcopy(NODES)
         self.compromised = {node: False for node in self.nodes}
         self.blocked_nodes = set()
@@ -57,49 +61,40 @@ class NetworkEnvironment:
         return self._get_state()
 
     def _get_state(self):
-        """
-        State includes: node statuses + all agent positions
-        Each agent sees the full global state (centralized observation)
-        """
-        state = []
-        node_list = list(self.nodes.keys())
-
-        # Node statuses
-        for node in node_list:
-            state.append(1 if self.compromised[node] else 0)
-            state.append(self.nodes[node]["vulnerability"])
-            state.append(1 if node in self.blocked_nodes else 0)
-            state.append(1 if node in self.honeypots else 0)
-
-        # All attacker positions (padded to max 4)
-        for i in range(4):
-            if i < len(self.attacker_positions):
-                pos = node_list.index(self.attacker_positions[i])
-                state.append(pos / len(node_list))
-            else:
-                state.append(-1)  # No agent
-
-        # All defender positions (padded to max 4)
-        for i in range(4):
-            if i < len(self.defender_positions):
-                pos = node_list.index(self.defender_positions[i])
-                state.append(pos / len(node_list))
-            else:
-                state.append(-1)
-
-        state.append(self.detection_score)
-        state.append(self.current_step / 50)
-        state.append(1 if self.ids_active else 0)
-        state.append(self.n_attackers / 4)
-        state.append(self.n_defenders / 4)
-
-        return tuple(round(x, 2) for x in state)
+        """Return the stable feature vector consumed by the DQN checkpoints."""
+        return encode_state(
+            nodes=self.nodes,
+            compromised=self.compromised,
+            blocked_nodes=self.blocked_nodes,
+            honeypots=self.honeypots,
+            attacker_positions=self.attacker_positions,
+            defender_positions=self.defender_positions,
+            detection_score=self.detection_score,
+            current_step=self.current_step,
+            ids_active=self.ids_active,
+            n_attackers=self.n_attackers,
+            n_defenders=self.n_defenders,
+        )
 
     def step(self, attacker_actions, defender_actions):
         """
-        attacker_actions: list of actions, one per attacker
-        defender_actions: list of actions, one per defender
+        attacker_actions: one action per attacker (a scalar is accepted for 1v1).
+        defender_actions: one action per defender (a scalar is accepted for 1v1).
         """
+        if isinstance(attacker_actions, int) and self.n_attackers == 1:
+            attacker_actions = [attacker_actions]
+        if isinstance(defender_actions, int) and self.n_defenders == 1:
+            defender_actions = [defender_actions]
+        if not isinstance(attacker_actions, (list, tuple)) or len(attacker_actions) != self.n_attackers:
+            raise ValueError(f"expected exactly {self.n_attackers} attacker actions")
+        if not isinstance(defender_actions, (list, tuple)) or len(defender_actions) != self.n_defenders:
+            raise ValueError(f"expected exactly {self.n_defenders} defender actions")
+        for action in attacker_actions:
+            if not isinstance(action, int) or isinstance(action, bool) or action not in ATTACK_TYPES:
+                raise ValueError("attacker actions must be valid integer attack IDs")
+        for action in defender_actions:
+            if not isinstance(action, int) or isinstance(action, bool) or action not in DEFENSE_TYPES:
+                raise ValueError("defender actions must be valid integer defense IDs")
         self.current_step += 1
         total_att_reward = 0
         total_def_reward = 0
@@ -164,7 +159,7 @@ class NetworkEnvironment:
                         if n not in self.blocked_nodes
                         and n not in self.isolated_nodes]
             if reachable:
-                new_pos = random.choice(reachable)
+                new_pos = self.rng.choice(reachable)
                 if not self.compromised[new_pos]:
                     att_reward += calculate_attacker_reward("move_to_new_node")
                 self.log(f"🔀 Attacker {agent_idx+1} moved to {new_pos}")
@@ -179,7 +174,7 @@ class NetworkEnvironment:
             success_prob = max(0.1, attack["base_success"] * vuln
                              - defense - ids_penalty)
 
-            if random.random() < success_prob:
+            if self.rng.random() < success_prob:
                 if action == 4:  # Ransomware
                     self.compromised[current_node] = True
                     att_reward += calculate_attacker_reward("ransomware_success")
@@ -225,7 +220,7 @@ class NetworkEnvironment:
                 detect_chance = self.detection_score * (1 - attack["stealth"])
                 if self.ids_active:
                     detect_chance = min(1.0, detect_chance * 1.5)
-                if random.random() < detect_chance:
+                if self.rng.random() < detect_chance:
                     self.detection_count += 1
                     att_reward += calculate_attacker_reward("detected",
                         stealth=attack["stealth"])
@@ -254,7 +249,7 @@ class NetworkEnvironment:
         elif action == 1:  # Block IP
             compromised = [n for n in self.compromised if self.compromised[n]]
             if compromised:
-                target = random.choice(compromised)
+                target = self.rng.choice(compromised)
                 self.blocked_nodes.add(target)
                 def_reward += calculate_defender_reward("attack_blocked", 2)
                 self.defender_score += 5
@@ -263,7 +258,7 @@ class NetworkEnvironment:
         elif action == 2:  # Patch
             unpatched = [n for n in self.nodes if n not in self.patched_nodes]
             if unpatched:
-                target = random.choice(unpatched)
+                target = self.rng.choice(unpatched)
                 self.patched_nodes.add(target)
                 self.nodes[target]["vulnerability"] = max(
                     0.05, self.nodes[target]["vulnerability"] - 0.25)
@@ -276,7 +271,7 @@ class NetworkEnvironment:
                            if not self.compromised[n]
                            and n not in self.honeypots]
             if uncompromised:
-                target = random.choice(uncompromised)
+                target = self.rng.choice(uncompromised)
                 self.honeypots.add(target)
                 self.log(f"🍯 Defender {agent_idx+1}: Honeypot at {target}")
 
@@ -287,8 +282,8 @@ class NetworkEnvironment:
             found = [n for n in self.compromised
                     if self.compromised[n]
                     and n not in self.blocked_nodes]
-            if found and random.random() < 0.4:
-                target = random.choice(found)
+            if found and self.rng.random() < 0.4:
+                target = self.rng.choice(found)
                 self.compromised[target] = False
                 def_reward += calculate_defender_reward("attack_blocked", 3)
                 self.defender_score += 8
@@ -298,7 +293,7 @@ class NetworkEnvironment:
             # Can only isolate compromised nodes, not attacker position directly
             compromised_list = [n for n in self.compromised if self.compromised[n]]
             if compromised_list:
-                target = random.choice(compromised_list)
+                target = self.rng.choice(compromised_list)
                 self.isolated_nodes.add(target)
                 def_reward += calculate_defender_reward("attack_blocked", 2)
                 self.defender_score += 10
