@@ -25,9 +25,9 @@ class ExperienceMemory:
 
     def __init__(self, path: str | os.PathLike[str] | None = None) -> None:
         configured = path or os.environ.get("CYBERARENA_MEMORY_DB", "data/agent_memory.sqlite3")
-        self.path = str(configured)
+        self.path = ":memory:" if str(configured) == ":memory:" else str(Path(configured).expanduser())
         if self.path != ":memory:":
-            Path(self.path).expanduser().parent.mkdir(parents=True, exist_ok=True)
+            Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._connection = sqlite3.connect(self.path, check_same_thread=False, timeout=10)
         self._connection.row_factory = sqlite3.Row
