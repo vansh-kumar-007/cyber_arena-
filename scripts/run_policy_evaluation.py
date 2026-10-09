@@ -139,12 +139,15 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--train-episodes", type=int, default=DEFAULT_TRAIN_EPISODES)
     parser.add_argument("--eval-episodes", type=int, default=DEFAULT_EVAL_EPISODES)
+    parser.add_argument("--eval-seed", type=int, default=None)
     parser.add_argument("--output", default="artifacts/policy-evaluation.json")
     parser.add_argument("--work-dir", default="artifacts/policy-evaluation-work")
     args = parser.parse_args()
 
     if args.seed < 0:
         parser.error("--seed must be non-negative")
+    if args.eval_seed is not None and args.eval_seed < 0:
+        parser.error("--eval-seed must be non-negative")
     if not 1 <= args.train_episodes <= 500:
         parser.error("--train-episodes must be between 1 and 500")
     if not 20 <= args.eval_episodes <= 1000:
@@ -205,7 +208,7 @@ def main() -> int:
     if missing:
         raise RuntimeError("training failed to create required policy artifacts: " + ", ".join(missing))
 
-    evaluation_seed = args.seed + 100_000
+    evaluation_seed = args.eval_seed if args.eval_seed is not None else args.seed + 100_000
     # Identical held-out environment seed set; it does not overlap the training seed
     # interval used by this bounded experiment.
     baseline_eval = evaluate_pair(
