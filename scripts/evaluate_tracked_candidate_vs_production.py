@@ -324,12 +324,12 @@ def main() -> int:
         candidate_defender["inference_latency_ms"]["defender"]["p95"],
     )
     candidate_invalid = (
-        candidate_attacker["safety_checks"]["invalid_action_count"]
-        + candidate_defender["safety_checks"]["invalid_action_count"]
+        candidate_attacker["safety_checks"]["attacker_invalid_action_count"]
+        + candidate_defender["safety_checks"]["defender_invalid_action_count"]
     )
     candidate_non_finite = (
-        candidate_attacker["safety_checks"]["non_finite_output_count"]
-        + candidate_defender["safety_checks"]["non_finite_output_count"]
+        candidate_attacker["safety_checks"]["attacker_non_finite_output_count"]
+        + candidate_defender["safety_checks"]["defender_non_finite_output_count"]
     )
     runtime_compatible = state_size == 37 and len(ATTACK_TYPES) == 12 and len(DEFENSE_TYPES) == 12
     # A weak/overlapping confidence interval is itself a rejection; never turn it
