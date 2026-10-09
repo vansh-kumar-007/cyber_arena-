@@ -684,11 +684,42 @@ MIT License — free to use, modify, and distribute.
 
 The state encoder now centralizes the observation layout used by the existing checkpoints. Its current feature contract is **37 values**: four features for each of six nodes, eight padded agent positions, and five global features. Changing this ordering or its normalization changes the model input contract and should be paired with retraining and a versioned checkpoint.
 
+
+
+### Reproducible training and checkpoint evaluation
+
+Run a small, seeded training job first to verify your environment. Increase the episode count only after the smoke run succeeds:
+
+```bash
+python -c "from train_dqn import train_marl; train_marl(n_attackers=1, n_defenders=1, num_episodes=5, seed=1234, save_models=False)"
+```
+
+To resume training for a configuration from its saved model pair and persisted scenario replay:
+
+```bash
+python -c "from train_dqn import train_marl; train_marl(n_attackers=1, n_defenders=1, num_episodes=500, seed=1234, resume=True)"
+```
+
+`seed` seeds Python, NumPy, PyTorch, and the environment's random generator. Reproducibility is bounded by the software/hardware stack and is not guaranteed across every PyTorch version or hardware platform. Replay is partitioned by `1v1`, `2v2`, and so on, so incompatible agent-count scenarios do not mix. By default, training history and replay records share `CYBERARENA_MEMORY_DB` with the API.
+
+The evaluation script compares two attacker/defender checkpoint pairs on the same fixed sequence of environment seeds, with win rate and a Wilson confidence interval, mean rewards, median episode length, and detections:
+
+```bash
+python evaluate_dqn.py \
+  --baseline-attacker models/final_attacker.pt \
+  --baseline-defender models/final_defender.pt \
+  --candidate-attacker models/final_marl_attacker_1v1.pt \
+  --candidate-defender models/final_marl_defender_1v1_defender.pt \
+  --episodes 100 --seed 1234 --output reports/evaluation.json
+```
+
+For a genuine before/after benchmark, preserve a baseline checkpoint pair before fine-tuning, then evaluate baseline and candidate with the same `--seed` and episode count. Do not treat one run or a drop in training loss by itself as evidence of improved policy quality. The CI suite tests component contracts and frontend rendering; it does not run large training jobs or claim a measured performance improvement.
+
 ### What is learned, and what is recorded?
 
-The DQN's actual policy learning occurs in the training pipeline through prioritized experience replay and Double DQN targets. API gameplay is **inference-only by default**: a public game request does not update or overwrite the deployed weights. The API separately writes auditable episodic records to SQLite, including the chosen action, observed reward, outcome label, state summary, and a cautious observation/lesson. The UI can search, inspect, correct, deprecate, and delete those records.
+The DQN's policy learning occurs in `train_dqn.py` through Double DQN targets and prioritized experience replay. The trainer now persists individual state/action/reward/next-state/terminal transitions in SQLite, partitioned by team-size scenario, and reloads up to 10,000 transitions per agent/scenario on a later run. Replayed priorities are reinitialized when loaded; historical PER priorities are not yet persisted. API gameplay is **inference-only by default**: a public game request does not update or overwrite deployed weights. It separately writes auditable episodic records, including action, observed reward, outcome label, state summary, and a cautious lesson.
 
-Stored records are historical observations, not proof of causality. Retrieval currently uses deterministic lexical matching, not vector embeddings. Displayed precedents provide context for a person reviewing the action; **they do not directly override the DQN policy**, and the observed success rate is not a controlled benchmark. The decision panel displays actual Q-value estimates from the loaded network. Q-values are relative estimates of expected return, not probabilities and not hidden chain-of-thought.
+Stored records are historical observations, not proof of causality. Retrieval currently uses deterministic lexical matching, not vector embeddings. Displayed precedents provide context to a person reviewing the action; **they do not directly override the DQN policy**, and observed success rate is not a controlled benchmark. The decision panel displays actual Q-value estimates from the loaded network. Q-values are relative estimates of expected return, not probabilities or hidden chain-of-thought.
 
 ### Run and configure the service
 
