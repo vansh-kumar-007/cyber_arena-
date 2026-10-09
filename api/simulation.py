@@ -17,6 +17,7 @@ from agents.dqn_defender import DQNDefender
 from configs.network_config import ATTACK_TYPES, DEFENSE_TYPES
 from env.network_env import NetworkEnvironment
 from utils.experience_memory import ExperienceMemory
+from utils.model_paths import resolve_model_dir
 
 logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -40,7 +41,7 @@ class SimulationManager:
         self.attacker = DQNAttacker(state_size=self.state_size)
         self.defender = DQNDefender(state_size=self.state_size)
         self.memory = memory or ExperienceMemory()
-        self.model_dir = Path(model_dir) if model_dir else PROJECT_ROOT / "models"
+        self.model_dir = resolve_model_dir(PROJECT_ROOT, model_dir)
         self.models_loaded = self._load_models()
         # Inference-only policy; an explicit training run controls exploration.
         self.attacker.epsilon = 0.0
