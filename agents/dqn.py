@@ -196,7 +196,7 @@ class DQNAgent:
             target_q = rewards + self.gamma * next_q * (1 - dones)
 
         # TD errors for priority update
-        td_errors = (target_q - current_q).detach().numpy()
+        td_errors = (target_q - current_q).detach().cpu().numpy()
         self.memory.update_priorities(indices, td_errors)
 
         # Weighted loss — important experiences contribute more
@@ -242,7 +242,7 @@ class DQNAgent:
         weights = []
         for name, param in self.online_net.named_parameters():
             if 'weight' in name:
-                w = param.detach().numpy()
+                w = param.detach().cpu().numpy()
                 weights.append({
                     "layer": name,
                     "shape": list(w.shape),
@@ -253,20 +253,44 @@ class DQNAgent:
         return weights
 
     def save(self, path):
-        """Save trained model to disk"""
+        """Save policy, target network, optimizer, and training counters."""
+        import os
+        directory = os.path.dirname(os.path.abspath(path))
+        os.makedirs(directory, exist_ok=True)
+        temporary_path = f"{path}.tmp"
         torch.save({
+            "checkpoint_version": 2,
+            "state_size": self.state_size,
+            "action_size": self.action_size,
             "online_net": self.online_net.state_dict(),
             "target_net": self.target_net.state_dict(),
+            "optimizer": self.optimizer.state_dict(),
             "epsilon": self.epsilon,
             "episode_count": self.episode_count,
-        }, path)
-        print(f"Model saved to {path}")
+            "gamma": self.gamma,
+            "learning_rate": self.learning_rate,
+            "batch_size": self.batch_size,
+            "target_update_freq": self.target_update_freq,
+        }, temporary_path)
+        os.replace(temporary_path, path)
 
     def load(self, path):
-        """Load trained model from disk"""
-        checkpoint = torch.load(path)
+        """Load a checkpoint safely and reject incompatible network dimensions."""
+        # weights_only prevents arbitrary Python object deserialization from checkpoints.
+        checkpoint = torch.load(path, map_location="cpu", weights_only=True)
+        if not isinstance(checkpoint, dict) or "online_net" not in checkpoint or "target_net" not in checkpoint:
+            raise ValueError("checkpoint is missing online/target network weights")
+        if checkpoint.get("state_size", self.state_size) != self.state_size:
+            raise ValueError("checkpoint state dimension does not match this environment")
+        if checkpoint.get("action_size", self.action_size) != self.action_size:
+            raise ValueError("checkpoint action dimension does not match this agent")
         self.online_net.load_state_dict(checkpoint["online_net"])
         self.target_net.load_state_dict(checkpoint["target_net"])
-        self.epsilon = checkpoint["epsilon"]
-        self.episode_count = checkpoint["episode_count"]
-        print(f"Model loaded from {path}")
+        if "optimizer" in checkpoint:
+            self.optimizer.load_state_dict(checkpoint["optimizer"])
+        self.epsilon = float(checkpoint.get("epsilon", self.epsilon))
+        self.episode_count = int(checkpoint.get("episode_count", self.episode_count))
+        self.gamma = float(checkpoint.get("gamma", self.gamma))
+        self.learning_rate = float(checkpoint.get("learning_rate", self.learning_rate))
+        self.batch_size = int(checkpoint.get("batch_size", self.batch_size))
+        self.target_update_freq = int(checkpoint.get("target_update_freq", self.target_update_freq))
