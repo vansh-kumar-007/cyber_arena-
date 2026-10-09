@@ -135,6 +135,155 @@ class ModelRegistry:
             self._event("candidate_registered", model_id, "candidate registered; not active")
         return metadata
 
+    def _evaluation_acceptance_errors(
+        self,
+        registry: dict[str, Any],
+        model: dict[str, Any],
+        metrics: dict[str, Any],
+        *,
+        check_current_baseline: bool,
+    ) -> list[str]:
+        """Re-check versioned acceptance evidence at evaluation and promotion time.
+
+        Candidate comparisons must compare both role-specific policies against the
+        exact currently active stable pair, across a fixed multi-seed holdout suite.
+        The initial registry bootstrap is a distinct, explicitly approved import of
+        the unchanged legacy production pair; it is not a candidate improvement.
+        """
+        errors: list[str] = []
+        if metrics.get("acceptance_criteria_version") != 1:
+            errors.append("acceptance_criteria_version must be 1")
+        if metrics.get("scenario_context") != model.get("scenario_context"):
+            errors.append("evaluation scenario does not match the candidate scenario")
+        kind = metrics.get("evaluation_kind")
+
+        if kind == "baseline_bootstrap":
+            if check_current_baseline and self.active_path.exists():
+                errors.append("baseline bootstrap is only allowed before an active registry pointer exists")
+            if metrics.get("source") != "existing_stable_checkpoint_pair":
+                errors.append("baseline bootstrap must identify the existing stable checkpoint pair")
+            if metrics.get("operator_approved") is not True:
+                errors.append("baseline bootstrap requires explicit operator approval")
+            if metrics.get("checkpoint_schema_verified") is not True:
+                errors.append("baseline bootstrap requires checkpoint/schema compatibility verification")
+            if metrics.get("attacker_checkpoint_sha256") != model.get("attacker_sha256"):
+                errors.append("baseline bootstrap attacker checksum does not match registered bytes")
+            if metrics.get("defender_checkpoint_sha256") != model.get("defender_sha256"):
+                errors.append("baseline bootstrap defender checksum does not match registered bytes")
+            return errors
+
+        if kind != "candidate_comparison":
+            errors.append("evaluation_kind must be baseline_bootstrap or candidate_comparison")
+            return errors
+
+        baseline_id = metrics.get("baseline_model_id")
+        baseline = registry.get("models", {}).get(baseline_id) if isinstance(baseline_id, str) else None
+        if not baseline:
+            errors.append("candidate comparison must reference a registered stable baseline_model_id")
+            return errors
+        if baseline_id == model.get("model_id"):
+            errors.append("candidate cannot be evaluated against itself")
+        if baseline.get("status") not in {"active", "approved", "rolled_back"}:
+            errors.append("baseline model must be active or previously approved")
+        if baseline.get("scenario_context") != model.get("scenario_context"):
+            errors.append("baseline and candidate scenario contexts differ")
+        for key, expected in (
+            ("environment_version", ENVIRONMENT_VERSION),
+            ("feature_schema_version", FEATURE_SCHEMA_VERSION),
+            ("action_schema_version", ACTION_SCHEMA_VERSION),
+        ):
+            if baseline.get(key) != expected:
+                errors.append(f"baseline {key} is incompatible")
+
+        for prefix, registered in (("baseline", baseline), ("candidate", model)):
+            hashes = metrics.get(f"{prefix}_checkpoint_sha256")
+            if not isinstance(hashes, dict):
+                errors.append(f"{prefix}_checkpoint_sha256 evidence is required")
+                continue
+            expected_hashes = {
+                "attacker": registered.get("attacker_sha256"),
+                "defender": registered.get("defender_sha256"),
+            }
+            if hashes != expected_hashes:
+                errors.append(f"{prefix} checkpoint checksums do not match the registered model")
+            for path_key, hash_key in (("attacker_path", "attacker_sha256"), ("defender_path", "defender_sha256")):
+                try:
+                    checkpoint = self._resolve_checkpoint(registered[path_key])
+                    if sha256_file(checkpoint) != registered[hash_key]:
+                        errors.append(f"{prefix} checkpoint checksum verification failed: {path_key}")
+                except (KeyError, OSError, ValueError) as exc:
+                    errors.append(f"{prefix} checkpoint could not be verified: {path_key} ({type(exc).__name__})")
+
+        if check_current_baseline:
+            try:
+                active = self.active_model()
+            except Exception:
+                active = None
+                errors.append("active model could not be verified when the evaluation was recorded")
+            if active is None or active.get("model_id") != baseline_id:
+                errors.append("candidate must be evaluated against the current active stable model")
+
+        for key in ("evaluation_suite_id", "evaluation_suite_version", "holdout_seed_set_sha256"):
+            if not isinstance(metrics.get(key), str) or not metrics[key].strip():
+                errors.append(f"{key} is required for reproducibility")
+
+        for key, minimum in (("training_seed_count", 3), ("paired_episodes", 300)):
+            value = metrics.get(key)
+            if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
+                errors.append(f"{key} must be an integer >= {minimum}")
+
+        for key in (
+            "attacker_crossplay_win_rate_delta_ci95",
+            "defender_crossplay_success_rate_delta_ci95",
+            "attacker_mean_reward_delta_ci95",
+            "defender_mean_reward_delta_ci95",
+        ):
+            value = metrics.get(key)
+            valid = (
+                isinstance(value, (list, tuple))
+                and len(value) == 2
+                and all(isinstance(part, (int, float)) and not isinstance(part, bool) and math.isfinite(float(part))
+                        for part in value)
+                and float(value[0]) <= float(value[1])
+            )
+            if not valid:
+                errors.append(f"{key} must contain finite [lower_95pct, upper_95pct] values")
+            elif key in {"attacker_crossplay_win_rate_delta_ci95", "defender_crossplay_success_rate_delta_ci95"}:
+                if float(value[0]) <= 0:
+                    errors.append(f"{key} lower 95% confidence bound must be > 0")
+
+        latency = metrics.get("inference_p95_latency_ms")
+        if (
+            not isinstance(latency, (int, float))
+            or isinstance(latency, bool)
+            or not math.isfinite(float(latency))
+            or float(latency) < 0
+            or float(latency) > 100.0
+        ):
+            errors.append("inference_p95_latency_ms must be finite and between 0 and 100 ms")
+
+        safety = metrics.get("safety_checks")
+        if not isinstance(safety, dict):
+            errors.append("safety_checks evidence is required")
+        else:
+            if safety.get("schema_compatible") is not True:
+                errors.append("candidate schema compatibility check did not pass")
+            if safety.get("runtime_load_smoke_passed") is not True:
+                errors.append("candidate runtime-load smoke test did not pass")
+            for key in ("invalid_action_count", "non_finite_output_count", "critical_regression_count"):
+                value = safety.get(key)
+                if not isinstance(value, int) or isinstance(value, bool) or value != 0:
+                    errors.append(f"safety_checks.{key} must be exactly zero")
+
+        for key, expected in (
+            ("environment_version", ENVIRONMENT_VERSION),
+            ("feature_schema_version", FEATURE_SCHEMA_VERSION),
+            ("action_schema_version", ACTION_SCHEMA_VERSION),
+        ):
+            if metrics.get(key) != expected:
+                errors.append(f"evaluation {key} does not match the runtime schema")
+        return errors
+
     def record_evaluation(
         self,
         model_id: str,
@@ -146,6 +295,8 @@ class ModelRegistry:
     ) -> dict[str, Any]:
         if not reason.strip():
             raise ValueError("evaluation decision reason is required")
+        if not isinstance(metrics, dict):
+            raise ValueError("evaluation metrics must be a structured object")
         with _LOCK:
             registry = self._read()
             model = registry["models"].get(model_id)
@@ -153,19 +304,29 @@ class ModelRegistry:
                 raise KeyError(model_id)
             if model["status"] in {"active", "rolled_back"}:
                 raise ValueError("cannot overwrite evaluation metadata for an active/rolled-back model")
-            # A passing self-reported boolean is not enough: required compatibility
-            # versions and metrics are checked again during promotion.
+
+            if not compatible:
+                acceptance_errors = ["checkpoint/environment/schema compatibility check failed"]
+            elif not passed:
+                acceptance_errors = ["evaluation did not pass its measured performance/safety checks"]
+            else:
+                acceptance_errors = self._evaluation_acceptance_errors(
+                    registry, model, metrics, check_current_baseline=True
+                )
+            accepted = bool(compatible and passed and not acceptance_errors)
             model["evaluation"] = {
                 "metrics": metrics,
                 "compatible": bool(compatible),
-                "passed": bool(passed),
+                "passed": accepted,
+                "claimed_passed": bool(passed),
                 "reason": reason,
+                "rejection_reasons": acceptance_errors,
                 "evaluated_at": _now(),
             }
-            model["status"] = "evaluated" if compatible and passed else "rejected"
-            model["decision_reason"] = reason
+            model["status"] = "evaluated" if accepted else "rejected"
+            model["decision_reason"] = reason if accepted else "rejected: " + "; ".join(acceptance_errors)
             self._write(registry)
-            self._event("evaluation_recorded", model_id, reason)
+            self._event("evaluation_recorded", model_id, model["decision_reason"])
             return model
 
     def _validated_model(self, registry: dict[str, Any], model_id: str) -> dict[str, Any]:
@@ -177,6 +338,11 @@ class ModelRegistry:
         evaluation = model.get("evaluation") or {}
         if evaluation.get("compatible") is not True or evaluation.get("passed") is not True:
             raise ValueError("model does not have a passing compatible evaluation")
+        acceptance_errors = self._evaluation_acceptance_errors(
+            registry, model, evaluation.get("metrics") or {}, check_current_baseline=False
+        )
+        if acceptance_errors:
+            raise ValueError("evaluation does not meet promotion acceptance criteria: " + "; ".join(acceptance_errors))
         if model.get("environment_version") != ENVIRONMENT_VERSION:
             raise ValueError("environment version mismatch")
         if model.get("feature_schema_version") != FEATURE_SCHEMA_VERSION:
