@@ -371,12 +371,13 @@ class ModelRegistry:
             raise ValueError("promotion reason is required")
         with _LOCK:
             registry = self._read()
-            # Re-evaluation must still target the policy that is active now. A
-            # different candidate may have been promoted since these metrics were recorded.
-            model = self._validated_model(registry, model_id, require_current_baseline=True)
             previous = self.active_model()
+            # Repeated promotion of the already-active, checksum-verified model is
+            # idempotent. Other candidates must still target the current baseline;
+            # an evaluation can become stale after another candidate is promoted.
             if previous and previous["model_id"] == model_id:
                 return previous
+            model = self._validated_model(registry, model_id, require_current_baseline=True)
             if previous:
                 prior = registry["models"].get(previous["model_id"])
                 if prior:
