@@ -1,5 +1,6 @@
 import sqlite3
 
+import pytest
 
 from utils.experience_memory import ExperienceMemory
 
