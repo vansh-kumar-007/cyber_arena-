@@ -163,3 +163,35 @@ def test_resume_fails_closed_when_checkpoint_pair_is_missing(tmp_path, monkeypat
             resume=True,
         )
     memory.close()
+
+
+def test_stop_before_first_episode_never_writes_random_candidate(tmp_path, monkeypatch):
+    monkeypatch.setattr(train_dqn, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(train_dqn, "_STOP_REQUESTED", True)
+    memory = ExperienceMemory(tmp_path / "runtime" / "memory.sqlite3")
+    output_dir = tmp_path / "separate-output"
+
+    metrics, _, _ = train_dqn.train_marl(
+        n_attackers=1,
+        n_defenders=1,
+        num_episodes=1,
+        save_models=True,
+        seed=123,
+        memory=memory,
+        restore_replay=False,
+        output_dir=output_dir,
+    )
+
+    assert metrics.attacker_rewards == []
+    assert metrics.defender_rewards == []
+    assert not (output_dir / "marl_1v1_attacker.pt").exists()
+    assert not (output_dir / "marl_1v1_defender.pt").exists()
+    assert not (output_dir / "final_marl_attacker_1v1.pt").exists()
+    assert not (output_dir / "final_marl_defender_1v1_defender.pt").exists()
+    reports = list((output_dir / "reports").glob("training_1v1_seed-123_*.json"))
+    assert len(reports) == 1
+    report = json.loads(reports[0].read_text(encoding="utf-8"))
+    assert report["run_status"] == "interrupted"
+    assert report["training_config"]["episodes_completed_this_run"] == 0
+    assert report["checkpoint_artifacts"] == {}
+    memory.close()

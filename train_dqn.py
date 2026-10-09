@@ -79,12 +79,19 @@ def _write_training_report(
             "defender_detections":int(detections),"steps":int(steps)})
     count=len(episodes)
     artifacts={}
-    if save_models:
-        for name,path in (
-            ("attacker_resume",attacker_checkpoint),("defender_resume",defender_checkpoint),
-            ("attacker_candidate",model_dir/f"final_marl_attacker_{context}.pt"),
-            ("defender_candidate",model_dir/f"final_marl_defender_{context}_defender.pt"),
-        ):
+    if save_models and count:
+        artifact_paths = [
+            ("attacker_resume", attacker_checkpoint),
+            ("defender_resume", defender_checkpoint),
+        ]
+        # Only a completed run creates new candidate artifacts. A partial report
+        # must not mislabel an old candidate file as the result of this run.
+        if run_status == "completed":
+            artifact_paths.extend([
+                ("attacker_candidate", model_dir / f"final_marl_attacker_{context}.pt"),
+                ("defender_candidate", model_dir / f"final_marl_defender_{context}_defender.pt"),
+            ])
+        for name,path in artifact_paths:
             if path.is_file():
                 artifacts[name]={"filename":path.name,"bytes":path.stat().st_size,"sha256":_sha256_file(path)}
     report={
@@ -380,18 +387,21 @@ def train_marl(
     if metrics.attacker_rewards:
         metrics.summary(last_n=min(100, len(metrics.attacker_rewards)))
 
-    if save_models:
-        model_dir.mkdir(parents=True, exist_ok=True)
-        # Always leave a resumable latest-state pair, including runs shorter than
-        # the periodic 100-episode checkpoint interval.
-        attacker_brain.save(str(attacker_checkpoint))
-        defender_brain.save(str(defender_checkpoint))
-        # These final artifacts remain the inference candidates consumed by the API.
-        attacker_brain.save(str(model_dir / f"final_marl_attacker_{context}.pt"))
-        defender_brain.save(str(model_dir / f"final_marl_defender_{context}_defender.pt"))
-
     run_status = ("completed" if len(metrics.attacker_rewards) == num_episodes
                   else "interrupted" if _STOP_REQUESTED else "stopped_early")
+    if save_models and metrics.attacker_rewards:
+        model_dir.mkdir(parents=True, exist_ok=True)
+        # Resume checkpoints may represent partial training, but candidate files are
+        # replaced only after the requested episode count has completed successfully.
+        attacker_brain.save(str(attacker_checkpoint))
+        defender_brain.save(str(defender_checkpoint))
+        if run_status == "completed":
+            attacker_brain.save(str(model_dir / f"final_marl_attacker_{context}.pt"))
+            defender_brain.save(str(model_dir / f"final_marl_defender_{context}_defender.pt"))
+        else:
+            print("Training did not complete; saved resume state without replacing the last completed candidate pair.")
+    elif save_models:
+        print("No episode completed; no checkpoint was written and existing candidate files were left unchanged.")
     _write_training_report(report_path,started_at=started_at,run_status=run_status,context=context,
         n_attackers=n_attackers,n_defenders=n_defenders,num_episodes_requested=num_episodes,seed=seed,
         resume=resume,restore_replay=restore_replay,save_models=save_models,model_dir=model_dir,
