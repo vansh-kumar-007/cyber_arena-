@@ -1,4 +1,5 @@
-import pytest
+import sqlite3
+
 
 from utils.experience_memory import ExperienceMemory
 
@@ -170,3 +171,57 @@ def test_unlinked_limit_configuration_is_validated(tmp_path):
         ExperienceMemory(tmp_path / "bad-limit.sqlite3", unlinked_limit=0)
     with pytest.raises(ValueError):
         ExperienceMemory(tmp_path / "bad-limit-2.sqlite3", unlinked_limit=1_000_001)
+
+def test_existing_legacy_schema_migrates_without_data_loss(tmp_path):
+    db = tmp_path / "legacy.sqlite3"
+    connection = sqlite3.connect(db)
+    connection.execute(
+        """CREATE TABLE experiences (
+            id TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL,
+            agent TEXT NOT NULL,
+            task TEXT NOT NULL,
+            state_summary TEXT NOT NULL,
+            action TEXT NOT NULL,
+            outcome TEXT NOT NULL,
+            reward REAL,
+            error_type TEXT,
+            lesson TEXT NOT NULL,
+            tags TEXT NOT NULL,
+            metadata TEXT NOT NULL
+        )"""
+    )
+    connection.execute(
+        """INSERT INTO experiences
+           (id, created_at, agent, task, state_summary, action, outcome, reward,
+            error_type, lesson, tags, metadata)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            "legacy-experience", "2026-01-01T00:00:00+00:00", "attacker",
+            "legacy task", "{}", "{}", "failure", -1.0, None,
+            "Legacy data must survive a schema migration.", "[]", "{}",
+        ),
+    )
+    connection.commit()
+    connection.close()
+
+    memory = ExperienceMemory(db)
+    entries = memory.list(limit=10)
+    assert len(entries) == 1
+    assert entries[0]["id"] == "legacy-experience"
+    assert entries[0]["lesson_status"] == "active"
+    assert memory.storage_status()["file_backed"] is True
+    assert memory.storage_status()["path_explicitly_configured"] is True
+    assert memory._connection.execute("PRAGMA user_version").fetchone()[0] == 1
+    assert memory._connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    memory.close()
+
+
+def test_storage_status_does_not_expose_database_path(tmp_path):
+    memory = ExperienceMemory(tmp_path / "private-path.sqlite3")
+    status = memory.storage_status()
+    assert status["backend"] == "sqlite"
+    assert status["file_backed"] is True
+    assert "path" not in status
+    assert str(tmp_path) not in str(status)
+    memory.close()
