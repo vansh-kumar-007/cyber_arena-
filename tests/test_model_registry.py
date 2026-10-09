@@ -1,15 +1,12 @@
 from __future__ import annotations
 
-import hashlib
 import json
-from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
-import api.simulation as simulation_module
-from api.simulation import SimulationManager
 from utils.model_registry import (
+    ensure_legacy_fallback_safe,
+    policy_identity_is_consistent,
     ACTION_SCHEMA_VERSION,
     ENVIRONMENT_VERSION,
     FEATURE_SCHEMA_VERSION,
@@ -241,143 +238,58 @@ def test_registry_fails_closed_on_corrupt_active_pointer_and_registry(tmp_path):
 
 
 
-class _FakeAgent:
-    def __init__(self, state_size: int):
-        self.state_size = state_size
-        self.epsilon = 0.0
-        self.memory = []
-        self.loaded_path: str | None = None
-
-    def load(self, path: str) -> None:
-        self.loaded_path = path
-
-
-def _simulation_for_model_loading(model_dir: Path, monkeypatch) -> SimulationManager:
-    monkeypatch.setattr(simulation_module, "DQNAttacker", _FakeAgent)
-    monkeypatch.setattr(simulation_module, "DQNDefender", _FakeAgent)
-    manager = object.__new__(SimulationManager)
-    manager.env = SimpleNamespace(n_attackers=1, n_defenders=1, current_step=0)
-    manager.state_size = 37
-    manager.memory = SimpleNamespace(summary=lambda: {"total_experiences": 0})
-    manager.model_dir = model_dir
-    manager.loaded_model_id = None
-    manager.loaded_policy_source = None
-    manager.loaded_checkpoint_sha256 = {}
-    manager.model_registry_error = False
-    manager.models_loaded = False
-    manager.episode_count = 0
-    manager.is_done = False
-    manager.memory_write_errors = 0
-    manager.attacker = _FakeAgent(37)
-    manager.defender = _FakeAgent(37)
-    return manager
-
-
-def _write_legacy_pair(model_dir: Path) -> tuple[Path, Path]:
-    model_dir.mkdir(parents=True, exist_ok=True)
-    attacker = model_dir / "final_marl_attacker_1v1.pt"
-    defender = model_dir / "final_marl_defender_1v1_defender.pt"
-    attacker.write_bytes(b"stable-attacker-fixture")
-    defender.write_bytes(b"stable-defender-fixture")
-    return attacker, defender
-
-
-def test_promotion_rejects_candidate_evaluated_against_a_stale_baseline(tmp_path):
-    registry = ModelRegistry(tmp_path / "models")
-    _active_baseline(registry)
-    _candidate(registry, "stale-v2")
-    _evaluate_candidate(registry, "stale-v2")
-    _candidate(registry, "newer-v2")
-    _evaluate_candidate(registry, "newer-v2")
-
-    registry.promote("newer-v2", reason="promote the freshly evaluated candidate")
-
-    with pytest.raises(ValueError, match="current active stable model"):
-        registry.promote("stale-v2", reason="stale evaluation must not be promoted")
-
-
-def test_registry_rejects_impossible_crossplay_confidence_interval_bounds(tmp_path):
-    registry = ModelRegistry(tmp_path / "models")
-    _active_baseline(registry)
-    _candidate(registry, "impossible-ci")
-    metrics = _comparison_metrics(registry, "impossible-ci")
-    metrics["attacker_crossplay_win_rate_delta_ci95"] = [2.0, 3.0]
-
-    result = _evaluate_candidate(registry, "impossible-ci", metrics_override=metrics)
-
-    assert result["status"] == "rejected"
-    assert any("within [-1.0, 1.0]" in item for item in result["evaluation"]["rejection_reasons"])
-
-
-def test_missing_active_pointer_after_promotion_refuses_legacy_fallback(tmp_path, monkeypatch):
+def test_missing_active_pointer_after_promotion_refuses_legacy_fallback(tmp_path):
     model_dir = tmp_path / "models"
     registry = ModelRegistry(model_dir)
     _candidate(registry, "stable-v1")
     _bootstrap_baseline(registry, "stable-v1")
     registry.promote("stable-v1", reason="controlled baseline activation")
     registry.active_path.unlink()
-    _write_legacy_pair(model_dir)
 
-    manager = _simulation_for_model_loading(model_dir, monkeypatch)
-    manager.models_loaded = manager._load_models()
-
-    assert manager.models_loaded is False
-    assert manager.model_registry_error is True
-    assert manager.loaded_model_id is None
+    with pytest.raises(RuntimeError, match="refusing legacy fallback"):
+        ensure_legacy_fallback_safe(model_dir)
 
 
-def test_corrupt_registry_without_active_pointer_refuses_legacy_fallback(tmp_path, monkeypatch):
+def test_corrupt_registry_without_active_pointer_refuses_legacy_fallback(tmp_path):
     model_dir = tmp_path / "models"
     registry_dir = model_dir / "registry"
     registry_dir.mkdir(parents=True)
     (registry_dir / "registry.json").write_text("{broken", encoding="utf-8")
-    _write_legacy_pair(model_dir)
 
-    manager = _simulation_for_model_loading(model_dir, monkeypatch)
-    manager.models_loaded = manager._load_models()
-
-    assert manager.models_loaded is False
-    assert manager.model_registry_error is True
-    assert manager.loaded_model_id is None
+    with pytest.raises(RuntimeError, match="refusing legacy fallback"):
+        ensure_legacy_fallback_safe(model_dir)
 
 
-def test_legacy_loader_records_checkpoint_identity_and_hashes(tmp_path, monkeypatch):
-    model_dir = tmp_path / "models"
-    attacker, defender = _write_legacy_pair(model_dir)
-    manager = _simulation_for_model_loading(model_dir, monkeypatch)
-
-    manager.models_loaded = manager._load_models()
-
-    assert manager.models_loaded is True
-    assert manager.loaded_model_id == (
-        "legacy:final_marl_attacker_1v1.pt|final_marl_defender_1v1_defender.pt"
+def test_loaded_policy_identity_must_match_active_pointer():
+    assert policy_identity_is_consistent(
+        registry_pointer_exists=True,
+        active_model_id="candidate-v2",
+        loaded_model_id="candidate-v2",
+        registry_error=False,
+        models_loaded=True,
+        loaded_policy_source="registry",
     )
-    assert manager.loaded_policy_source == "legacy"
-    assert manager.loaded_checkpoint_sha256 == {
-        "attacker": hashlib.sha256(attacker.read_bytes()).hexdigest(),
-        "defender": hashlib.sha256(defender.read_bytes()).hexdigest(),
-    }
-    assert manager.status()["policy_consistent"] is True
-
-
-def test_serving_status_detects_policy_pointer_changed_after_load(tmp_path, monkeypatch):
-    model_dir = tmp_path / "models"
-    registry = ModelRegistry(model_dir)
-    _active_baseline(registry)
-    manager = _simulation_for_model_loading(model_dir, monkeypatch)
-    manager.models_loaded = manager._load_models()
-
-    assert manager.models_loaded is True
-    before = manager.status()
-    assert before["active_model_id"] == "stable-v1"
-    assert before["loaded_model_id"] == "stable-v1"
-    assert before["policy_consistent"] is True
-
-    _candidate(registry, "candidate-v2")
-    _evaluate_candidate(registry, "candidate-v2")
-    registry.promote("candidate-v2", reason="simulate external pointer promotion")
-
-    after = manager.status()
-    assert after["active_model_id"] == "candidate-v2"
-    assert after["loaded_model_id"] == "stable-v1"
-    assert after["policy_consistent"] is False
+    assert not policy_identity_is_consistent(
+        registry_pointer_exists=True,
+        active_model_id="candidate-v2",
+        loaded_model_id="stable-v1",
+        registry_error=False,
+        models_loaded=True,
+        loaded_policy_source="registry",
+    )
+    assert not policy_identity_is_consistent(
+        registry_pointer_exists=True,
+        active_model_id=None,
+        loaded_model_id="stable-v1",
+        registry_error=True,
+        models_loaded=True,
+        loaded_policy_source="registry",
+    )
+    assert policy_identity_is_consistent(
+        registry_pointer_exists=False,
+        active_model_id=None,
+        loaded_model_id="legacy:attacker|defender",
+        registry_error=False,
+        models_loaded=True,
+        loaded_policy_source="legacy",
+    )

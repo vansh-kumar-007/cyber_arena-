@@ -6,8 +6,6 @@ pipeline so public gameplay traffic cannot silently rewrite deployed weights.
 """
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -23,14 +21,6 @@ from utils.model_paths import resolve_model_dir
 
 logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
-
-def _checkpoint_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 class SimulationManager:
@@ -118,47 +108,12 @@ class SimulationManager:
                 logger.exception("Active model registry is invalid; refusing legacy/random fallback")
                 return False
 
-        # A missing active pointer is normal before the registry is initialized.
-        # Once a registry has recorded any promotion, or its state is partial/corrupt,
-        # absence of the pointer is not permission to fall back to legacy weights.
+        # A missing pointer is only safe before registry promotion has occurred.
         if registry_dir.exists():
             try:
-                from utils.model_registry import REGISTRY_VERSION
+                from utils.model_registry import ensure_legacy_fallback_safe
 
-                registry_path = registry_dir / "registry.json"
-                if not registry_path.is_file():
-                    raise RuntimeError("registry.json is missing while the registry directory exists")
-                registry_data = json.loads(registry_path.read_text(encoding="utf-8"))
-                if (
-                    registry_data.get("schema_version") != REGISTRY_VERSION
-                    or not isinstance(registry_data.get("models"), dict)
-                ):
-                    raise RuntimeError("model registry schema is invalid")
-                valid_statuses = {
-                    "candidate", "evaluated", "approved", "active", "rejected", "rolled_back"
-                }
-                models = registry_data["models"]
-                if any(
-                    not isinstance(record, dict) or record.get("status") not in valid_statuses
-                    for record in models.values()
-                ):
-                    raise RuntimeError("model registry contains invalid model records")
-                previously_promoted = any(
-                    record.get("status") in {"active", "approved", "rolled_back"}
-                    for record in models.values()
-                )
-                history_path = registry_dir / "history.jsonl"
-                if history_path.exists():
-                    for line in history_path.read_text(encoding="utf-8").splitlines():
-                        if not line.strip():
-                            continue
-                        event = json.loads(line)
-                        if not isinstance(event, dict):
-                            raise RuntimeError("model registry history contains an invalid event")
-                        if event.get("event") in {"model_promoted", "model_rolled_back"}:
-                            previously_promoted = True
-                if previously_promoted:
-                    raise RuntimeError("registry activation history exists but active.json is missing")
+                ensure_legacy_fallback_safe(self.model_dir)
             except Exception:
                 self.model_registry_error = True
                 logger.exception(
@@ -195,9 +150,11 @@ class SimulationManager:
                 self.defender = candidate_defender
                 self.loaded_model_id = f"legacy:{attacker_name}|{defender_name}"
                 self.loaded_policy_source = "legacy"
+                from utils.model_registry import sha256_file
+
                 self.loaded_checkpoint_sha256 = {
-                    "attacker": _checkpoint_sha256(attacker_path),
-                    "defender": _checkpoint_sha256(defender_path),
+                    "attacker": sha256_file(attacker_path),
+                    "defender": sha256_file(defender_path),
                 }
                 logger.info(
                     "Loaded compatible model pair: %s / %s "
@@ -397,20 +354,16 @@ class SimulationManager:
                 model_registry_error = True
                 logger.exception("Could not read active model registry status")
 
-        if registry_pointer_exists:
-            # The on-disk pointer can be promoted by a separate operator process.
-            # Do not call that the loaded policy unless the in-memory pair matches it.
-            policy_consistent = (
-                not model_registry_error
-                and active_model_id is not None
-                and active_model_id == self.loaded_model_id
-            )
-        else:
-            policy_consistent = (
-                self.models_loaded
-                and self.loaded_policy_source == "legacy"
-                and not model_registry_error
-            )
+        from utils.model_registry import policy_identity_is_consistent
+
+        policy_consistent = policy_identity_is_consistent(
+            registry_pointer_exists=registry_pointer_exists,
+            active_model_id=active_model_id,
+            loaded_model_id=self.loaded_model_id,
+            registry_error=model_registry_error,
+            models_loaded=self.models_loaded,
+            loaded_policy_source=self.loaded_policy_source,
+        )
 
         return {
             "active_model_id": active_model_id,

@@ -31,6 +31,65 @@ def sha256_file(path: str | Path) -> str:
     return digest.hexdigest()
 
 
+def ensure_legacy_fallback_safe(model_dir: str | Path) -> None:
+    """Refuse legacy checkpoint fallback if registry state is missing/corrupt or was promoted."""
+    root = Path(model_dir).resolve()
+    registry_dir = root / "registry"
+    if not registry_dir.exists():
+        return
+    if (registry_dir / "active.json").exists():
+        raise RuntimeError("active registry pointer exists; registry loading is required")
+    try:
+        registry_path = registry_dir / "registry.json"
+        if not registry_path.is_file():
+            raise RuntimeError("registry.json is missing")
+        data = json.loads(registry_path.read_text(encoding="utf-8"))
+        if data.get("schema_version") != REGISTRY_VERSION or not isinstance(data.get("models"), dict):
+            raise RuntimeError("model registry schema is invalid")
+        allowed_statuses = {"candidate", "evaluated", "approved", "active", "rejected", "rolled_back"}
+        models = data["models"]
+        if any(
+            not isinstance(record, dict) or record.get("status") not in allowed_statuses
+            for record in models.values()
+        ):
+            raise RuntimeError("model registry contains invalid model records")
+        promoted = any(
+            record.get("status") in {"active", "approved", "rolled_back"}
+            for record in models.values()
+        )
+        history_path = registry_dir / "history.jsonl"
+        if history_path.exists():
+            for line in history_path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                event = json.loads(line)
+                if not isinstance(event, dict):
+                    raise RuntimeError("model registry history contains an invalid event")
+                if event.get("event") in {"model_promoted", "model_rolled_back"}:
+                    promoted = True
+        if promoted:
+            raise RuntimeError("registry activation history exists but active.json is missing")
+    except Exception as exc:
+        raise RuntimeError("model registry state is corrupt or incomplete; refusing legacy fallback") from exc
+
+
+def policy_identity_is_consistent(
+    *,
+    registry_pointer_exists: bool,
+    active_model_id: str | None,
+    loaded_model_id: str | None,
+    registry_error: bool,
+    models_loaded: bool,
+    loaded_policy_source: str | None,
+) -> bool:
+    """Report readiness only when the in-memory weights match the active policy."""
+    if registry_error or not models_loaded:
+        return False
+    if registry_pointer_exists:
+        return active_model_id is not None and active_model_id == loaded_model_id
+    return loaded_policy_source == "legacy"
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
