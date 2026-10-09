@@ -45,6 +45,8 @@ simulation_lock = threading.RLock()
 
 class ResetRequest(BaseModel):
     seed: int | None = Field(default=None, ge=0, le=2**32 - 1)
+    n_attackers: int | None = Field(default=None, ge=1, le=4)
+    n_defenders: int | None = Field(default=None, ge=1, le=4)
 
 
 class MemoryLessonUpdate(BaseModel):
@@ -81,15 +83,24 @@ def health():
         "status": "ok",
         "models_loaded": status["models_loaded"],
         "state_size": status["state_size"],
+        "n_attackers": status["n_attackers"],
+        "n_defenders": status["n_defenders"],
         "memory_available": status["memory_write_errors"] == 0,
     }
 
 
 @app.post("/reset")
 def reset_simulation(request: ResetRequest | None = None):
-    """Start a new episode. An optional seed makes environment randomness reproducible."""
+    """Start a seeded episode and optionally select the requested attacker/defender counts."""
     with simulation_lock:
-        result = sim.reset(seed=request.seed if request else None)
+        if request is None:
+            result = sim.reset()
+        else:
+            result = sim.reset(
+                seed=request.seed,
+                n_attackers=request.n_attackers,
+                n_defenders=request.n_defenders,
+            )
     return {"success": True, "data": result}
 
 
