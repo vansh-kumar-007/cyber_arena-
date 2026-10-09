@@ -16,6 +16,14 @@ deploy/restart. The currently loaded legacy checkpoint pair is still:
 
 The model registry is not enabled in production. No candidate has been promoted.
 
+The serving process reports the effective loaded model ID and checkpoint SHA-256 values.
+Changing the on-disk registry pointer from a separate operator process does **not** hot-load
+new neural-network weights into an already-running `SimulationManager`; health becomes
+degraded when the pointed-to model and in-memory model differ. After a separately reviewed
+promotion, use a controlled restart to load the new pair, then verify the reported ID and
+hashes before considering the rollout complete. Never promote this tracked candidate: its
+current matched-seed report does not meet the acceptance gate.
+
 ## Storage design decision
 
 Keep SQLite for current workloads. The application currently runs one API instance and
