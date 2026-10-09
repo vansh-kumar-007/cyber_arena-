@@ -202,7 +202,11 @@ def run_seed_blocks(
     )
     aggregate["safety_checks"] = {
         "invalid_action_count": sum(report["safety_checks"]["invalid_action_count"] for report in reports),
+        "attacker_invalid_action_count": sum(report["safety_checks"]["attacker_invalid_action_count"] for report in reports),
+        "defender_invalid_action_count": sum(report["safety_checks"]["defender_invalid_action_count"] for report in reports),
         "non_finite_output_count": sum(report["safety_checks"]["non_finite_output_count"] for report in reports),
+        "attacker_non_finite_output_count": sum(report["safety_checks"]["attacker_non_finite_output_count"] for report in reports),
+        "defender_non_finite_output_count": sum(report["safety_checks"]["defender_non_finite_output_count"] for report in reports),
         "forward_passes": {
             "attacker": sum(report["safety_checks"]["attacker_q_forward_passes"] for report in reports),
             "defender": sum(report["safety_checks"]["defender_q_forward_passes"] for report in reports),
