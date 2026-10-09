@@ -1435,7 +1435,13 @@ const saveSession = useCallback((state, log) => {
         // ── REAL DQN MODE ──────────────────────────────────────
         try {
           const data = await apiCall("/step", "POST");
-          if (!data) return;
+          if (!data) {
+            setApiConnected(false);
+            setUseRealAI(false);
+            setApiError("The DQN API request failed, so the match was paused instead of silently switching to a mock simulation. Check the backend and retry.");
+            setGameState(prev => ({ ...prev, isRunning: false }));
+            return;
+          }
 
           const s = data.state;
           const attack = ATTACKS[data.att_action] || null;
@@ -1482,8 +1488,10 @@ const saveSession = useCallback((state, log) => {
 
         } catch(e) {
           console.error("API step failed:", e);
-          // Fall back to simulation mode if API fails
-          setGameState(prev => runSimulationStep(prev));
+          setApiConnected(false);
+          setUseRealAI(false);
+          setApiError("The DQN API request failed and the match was paused to avoid mixing real and simulated actions.");
+          setGameState(prev => ({ ...prev, isRunning: false }));
         }
 
       } else {
