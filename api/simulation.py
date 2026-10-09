@@ -59,11 +59,17 @@ class SimulationManager:
             if not attacker_path.is_file() or not defender_path.is_file():
                 continue
             try:
-                self.attacker.load(str(attacker_path))
-                self.defender.load(str(defender_path))
+                # Load into temporary agents so a half-loaded pair can never leave
+                # the running simulation with one trained and one random network.
+                candidate_attacker = DQNAttacker(state_size=self.state_size)
+                candidate_defender = DQNDefender(state_size=self.state_size)
+                candidate_attacker.load(str(attacker_path))
+                candidate_defender.load(str(defender_path))
+                self.attacker = candidate_attacker
+                self.defender = candidate_defender
                 logger.info("Loaded compatible model pair: %s / %s", attacker_path.name, defender_path.name)
                 return True
-            except (RuntimeError, KeyError, ValueError, OSError) as exc:
+            except Exception as exc:
                 logger.warning("Skipping incompatible checkpoint pair %s/%s: %s",
                                attacker_path.name, defender_path.name, exc)
         logger.warning("No compatible trained model pair found; API uses untrained weights")
