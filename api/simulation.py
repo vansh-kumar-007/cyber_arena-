@@ -263,6 +263,8 @@ class SimulationManager:
             "def_memory": len(self.defender.memory),
             "models_loaded": self.models_loaded,
             "state_size": self.state_size,
+            "n_attackers": self.env.n_attackers,
+            "n_defenders": self.env.n_defenders,
             "experience_memory": self.memory.summary(),
             "memory_write_errors": self.memory_write_errors,
         }
