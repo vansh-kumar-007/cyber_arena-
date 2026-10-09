@@ -3,9 +3,15 @@ import { motion, AnimatePresence } from "framer-motion";
 
 // ─── API CONFIG ───────────────────────────────────────────────────────────────
 const API_URL = process.env.REACT_APP_API_URL || "http://localhost:8000";
-async function apiCall(endpoint, method = "GET") {
+async function apiCall(endpoint, method = "GET", body = undefined) {
   try {
-    const res = await fetch(`${API_URL}${endpoint}`, { method });
+    const options = { method };
+    if (body !== undefined) {
+      options.headers = { "Content-Type": "application/json" };
+      options.body = JSON.stringify(body);
+    }
+    const res = await fetch(`${API_URL}${endpoint}`, options);
+    if (!res.ok) return null;
     const data = await res.json();
     return data.data;
   } catch (e) {
@@ -1338,6 +1344,7 @@ export default function App() {
   const intervalRef = useRef(null);
   const [useRealAI, setUseRealAI] = useState(false);
   const [apiConnected, setApiConnected] = useState(false);
+  const [modelsLoaded, setModelsLoaded] = useState(false);
   const [apiError, setApiError] = useState("");
   const [showAgentMemory, setShowAgentMemory] = useState(false);
 
@@ -1369,11 +1376,23 @@ const saveSession = useCallback((state, log) => {
 
   const startGame = async () => {
     if (useRealAI && apiConnected) {
-      try {
-        await apiCall("/reset", "POST");
-      } catch(e) {
-        console.log("Reset failed, continuing anyway");
+      const resetData = await apiCall("/reset", "POST", {
+        n_attackers: gameState.nAttackers,
+        n_defenders: gameState.nDefenders,
+      });
+      if (!resetData) {
+        setApiConnected(false);
+        setUseRealAI(false);
+        setApiError("The backend could not reset the requested DQN scenario. Check the API connection and retry.");
+        return;
       }
+      setModelsLoaded(Boolean(resetData.models_loaded));
+      if (!resetData.models_loaded) {
+        setUseRealAI(false);
+        setApiError(`No trained checkpoint pair is available for ${gameState.nAttackers}v${gameState.nDefenders}. Train that scenario or choose SIM mode; the real-DQN match was not started.`);
+        return;
+      }
+      setApiError("");
     }
     setGameState(prev => ({
       ...prev,
@@ -1410,11 +1429,17 @@ const saveSession = useCallback((state, log) => {
     try {
       const response = await fetch(`${API_URL}/health`);
       if (!response.ok) throw new Error(`Backend returned HTTP ${response.status}`);
-      await response.json();
+      const health = await response.json();
       setApiConnected(true);
-      setApiError("");
+      setModelsLoaded(Boolean(health.models_loaded));
+      if (health.models_loaded) {
+        setApiError("");
+      } else {
+        setApiError("The API is reachable, but no compatible trained checkpoint is loaded for its current scenario. REAL DQN will verify the selected team size before starting.");
+      }
     } catch (error) {
       setApiConnected(false);
+      setModelsLoaded(false);
       setApiError("The DQN API is unreachable. SIM mode remains available; start/check the backend, then retry before selecting REAL DQN.");
     }
   }, []);
