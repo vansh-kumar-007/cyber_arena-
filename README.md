@@ -762,12 +762,13 @@ Supported server environment variables:
 |---|---|
 | `CYBERARENA_CORS_ORIGINS` | Comma-separated allowed browser origins. Defaults to the published Vercel URL and localhost development origins. |
 | `CYBERARENA_MEMORY_DB` | SQLite file path; defaults to `<repo>/data/agent_memory.sqlite3`. |
+| `CYBERARENA_MODEL_DIR` | Checkpoint and model-registry directory; defaults to `<repo>/models/`. Set it to the same durable mount used for model registry versions and active pointers. |
 | `CYBERARENA_ADMIN_TOKEN` | Server-side token required for lesson edits/deletes/resets. Never commit it or bake it into the frontend bundle. |
 | `CYBERARENA_UNLINKED_EXPERIENCE_LIMIT` | Maximum retained unlinked episode records, default `20000` (valid range `1`–`1000000`); old unlinked records are trimmed at startup and every 1000 writes. Records linked to replay transitions are preserved. |
 | `LOG_LEVEL` | Python log level, default `INFO`. |
 | `PORT` | Backend port, default `8000`. |
 
-For Render or another ephemeral deployment, attach persistent disk storage and point `CYBERARENA_MEMORY_DB` to that mounted disk (for example, `/var/data/agent_memory.sqlite3`). Without persistent mounted storage, SQLite history can disappear during redeploys or instance replacement. Set `CYBERARENA_CORS_ORIGINS` to the exact frontend origin for your deployment. The API's memory mutation endpoints return 503 until an admin token is configured and return 403 for a missing or invalid token. The browser asks for the token when an administrator opens the memory panel; the application does not store it in local storage.
+For Render or another ephemeral deployment, first attach a persistent disk on a plan that supports it, back up existing SQLite data with SQLite’s online backup API, and copy the known checkpoint pair to the mounted volume before deploying. Then set `CYBERARENA_MEMORY_DB=/var/data/agent_memory.sqlite3` and `CYBERARENA_MODEL_DIR=/var/data/models`. Without persistent mounted storage, SQLite history and registry files can disappear during redeploys or instance replacement. See [`docs/phase3-storage-runbook.md`](docs/phase3-storage-runbook.md) for a non-destructive migration and persistence-test sequence. Set `CYBERARENA_CORS_ORIGINS` to the exact frontend origin for your deployment. The API's memory mutation endpoints return 503 until an admin token is configured and return 403 for a missing or invalid token. The browser asks for the token when an administrator opens the memory panel; the application does not store it in local storage.
 
 The API has a single shared game state per process. Run one Uvicorn worker when the browser should control a single coherent match; multiple workers would each have their own simulation state. If you expose the service publicly, terminate HTTPS at the hosting platform, configure the admin token as a secret, and keep the frontend and backend origins explicit.
 
