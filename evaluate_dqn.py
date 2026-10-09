@@ -119,6 +119,10 @@ def main() -> int:
     parser.add_argument("--candidate-defender", required=True)
     parser.add_argument("--episodes", type=int, default=100)
     parser.add_argument("--seed", type=int, default=1234)
+    parser.add_argument(
+        "--eval-seed", type=int, default=None,
+        help="Optional explicit evaluation seed so multiple training runs share one held-out suite",
+    )
     parser.add_argument("--output", default=None, help="Optional JSON results path")
     args = parser.parse_args()
 
@@ -126,6 +130,8 @@ def main() -> int:
         parser.error("--episodes must be between 1 and 10000")
     if args.seed < 0:
         parser.error("--seed must be non-negative")
+    if args.eval_seed is not None and args.eval_seed < 0:
+        parser.error("--eval-seed must be non-negative")
     paths = [
         args.baseline_attacker, args.baseline_defender,
         args.candidate_attacker, args.candidate_defender,
@@ -144,14 +150,14 @@ def main() -> int:
         attacker_path=args.baseline_attacker,
         defender_path=args.baseline_defender,
         episodes=args.episodes,
-        seed=args.seed,
+        seed=args.eval_seed if args.eval_seed is not None else args.seed,
     )
     candidate = evaluate_pair(
         name="candidate",
         attacker_path=args.candidate_attacker,
         defender_path=args.candidate_defender,
         episodes=args.episodes,
-        seed=args.seed,
+        seed=args.eval_seed if args.eval_seed is not None else args.seed,
     )
     report = {
         "evaluation": "fixed-seed paired checkpoint comparison",
