@@ -384,9 +384,14 @@ Live REST API powering the real DQN simulation.
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/` | API status |
-| POST | `/reset` | Start new episode |
+| POST | `/reset` | Start episode; optional seed and team sizes (1–4 each); requires a trained checkpoint for REAL DQN |
 | POST | `/step` | Run one DQN step |
-| GET | `/weights` | Neural network weights |\n| GET | `/health` | Readiness and model/memory availability |\n| GET | `/memory` | Saved episodes and outcome counts |\n| GET | `/memory/search?q=...` | Lexical search over prior episodes |\n| PATCH/DELETE | `/memory/{id}` | Correct, deprecate, or delete a memory (admin token required) |\n| DELETE | `/memory?confirm=true` | Clear all memories (admin token required) |
+| GET | `/weights` | Neural network weights |
+| GET | `/health` | Readiness and model/memory availability |
+| GET | `/memory` | Saved episodes and outcome counts |
+| GET | `/memory/search?q=...` | Lexical search over prior episodes |
+| PATCH/DELETE | `/memory/{id}` | Correct, deprecate, or delete a memory (admin token required) |
+| DELETE | `/memory?confirm=true` | Clear all memories (admin token required) |
 | GET | `/status` | Simulation/model/memory health |
 
 ### AI Mode Toggle
@@ -762,6 +767,8 @@ The API has a single shared game state per process. Run one Uvicorn worker when 
 
 ### Verification status and remaining limitations
 
-A GitHub Actions workflow now compiles the Python sources, runs focused environment and memory tests, and builds the React frontend. The tests cover observation dimensions, seeded environment reproducibility, action validation, the episode horizon, and SQLite persistence/retrieval/edit/delete/reset. CI does **not** prove that long DQN training converges or reproduce every historical metric included earlier in this README. The legacy Streamlit dashboard and `main.py` still use the baseline Q-learning path; use `train_dqn.py` for the DQN/MARL training implementation. Evaluation before/after a policy change should use fixed seeds and identical held-out episodes, with rewards, win rate, episode length, and uncertainty reported together.
+GitHub Actions compiles the Python modules, tests environment invariants, replay persistence, API authorization and reset validation, runs a short CPU DQN training/checkpoint/replay smoke test, and tests/builds the React frontend. The training smoke test verifies that gradient updates occur and that scenario-specific checkpoints can be loaded; it is not a convergence benchmark. CI does **not** prove that long DQN training converges or reproduce every historical metric included earlier in this README. The legacy Streamlit dashboard and `main.py` still use the baseline Q-learning path; use `train_dqn.py` for the DQN/MARL training implementation. Evaluation before/after a policy change should use fixed seeds and identical held-out episodes, with rewards, win rate, episode length, and uncertainty reported together.
+
+The current frontend dependency tree also reports 89 npm advisories (3 critical and 71 high in the latest observed CI install output). These have not been auto-upgraded because a forced upgrade could break the Create React App build; review and resolve them in a dedicated dependency migration before treating the public deployment as fully hardened.
 
 This repository models cybersecurity concepts in a closed simulation only. It must not be used to run actions against real networks or infrastructure.
