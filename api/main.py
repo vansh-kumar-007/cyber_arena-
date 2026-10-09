@@ -77,15 +77,22 @@ def root():
 
 @app.get("/health")
 def health():
+    """Report process liveness separately from readiness to serve trained policies."""
     with simulation_lock:
         status = sim.status()
+    ready = bool(status["models_loaded"]) and status["memory_write_errors"] == 0
     return {
+        # Keep status="ok" for backwards-compatible liveness probes. Consumers
+        # that require a trained policy should gate on ready/readiness instead.
         "status": "ok",
+        "ready": ready,
+        "readiness": "ready" if ready else "degraded",
         "models_loaded": status["models_loaded"],
         "state_size": status["state_size"],
         "n_attackers": status["n_attackers"],
         "n_defenders": status["n_defenders"],
         "memory_available": status["memory_write_errors"] == 0,
+        "memory_write_errors": status["memory_write_errors"],
     }
 
 
