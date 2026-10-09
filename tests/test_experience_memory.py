@@ -70,3 +70,67 @@ def test_validation_delete_and_reset(tmp_path):
     assert memory.reset() == 1
     assert memory.list() == []
     memory.close()
+
+def test_replay_transitions_persist_reload_and_respect_capacity(tmp_path):
+    db = tmp_path / "replay.sqlite3"
+    memory = ExperienceMemory(db)
+    linked = memory.record(
+        agent="attacker", task="replay example", state_summary={"step": 0},
+        action={"id": 1}, outcome="failure", reward=-0.5,
+        lesson="The action was followed by a negative reward.",
+    )
+    for idx in range(3):
+        memory.remember_transition(
+            agent="attacker",
+            context="1v1",
+            state=[float(idx), 0.0],
+            action=idx,
+            reward=-0.5 + idx,
+            next_state=[float(idx + 1), 0.0],
+            terminal=(idx == 2),
+            experience_id=linked["id"] if idx == 0 else None,
+            capacity=2,
+        )
+    transitions = memory.load_transitions(agent="attacker", context="1v1")
+    assert [item["action"] for item in transitions] == [1, 2]
+    assert memory.summary()["persisted_replay_transitions"] == 2
+    memory.close()
+
+    reopened = ExperienceMemory(db)
+    assert reopened.load_transitions(agent="attacker", context="1v1") == transitions
+    assert reopened.delete(linked["id"]) is True
+    # The transition linked to the audit entry was already evicted by capacity;
+    # removing an experience that still has linked replay should cascade.
+    second = reopened.record(
+        agent="defender", task="linked replay", state_summary={},
+        action={"id": 0}, outcome="neutral", lesson="Neutral outcome observed.",
+    )
+    reopened.remember_transition(
+        agent="defender", context="1v1", state=[0.0], action=0,
+        reward=0.0, next_state=[0.1], terminal=False, experience_id=second["id"],
+    )
+    assert reopened.delete(second["id"]) is True
+    assert reopened.load_transitions(agent="defender", context="1v1") == []
+    assert reopened.reset() == 2
+    assert reopened.summary()["persisted_replay_transitions"] == 0
+    reopened.close()
+
+
+def test_replay_rejects_invalid_transitions(tmp_path):
+    memory = ExperienceMemory(tmp_path / "replay.sqlite3")
+    with pytest.raises(ValueError):
+        memory.remember_transition(
+            agent="unknown", context="1v1", state=[0], action=0,
+            reward=0, next_state=[0], terminal=False,
+        )
+    with pytest.raises(ValueError):
+        memory.remember_transition(
+            agent="attacker", context="1v1", state=[float("nan")], action=0,
+            reward=0, next_state=[0], terminal=False,
+        )
+    with pytest.raises(ValueError):
+        memory.remember_transition(
+            agent="attacker", context="1v1", state=[0], action=12,
+            reward=0, next_state=[0], terminal=False,
+        )
+    memory.close()
