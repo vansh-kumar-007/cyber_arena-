@@ -100,6 +100,10 @@ def evaluate_pair(
         # Retain seed-aligned outcomes so the caller can perform paired statistical
         # comparisons instead of relying only on separate marginal win-rate intervals.
         "attacker_wins_by_episode": wins_by_episode,
+        "attacker_rewards_by_episode": rewards_att,
+        "defender_rewards_by_episode": rewards_def,
+        "episode_steps_by_episode": steps_list,
+        "detections_by_episode": detections_list,
         "mean_attacker_reward": mean(rewards_att),
         "mean_defender_reward": mean(rewards_def),
         "median_episode_steps": median(steps_list),
