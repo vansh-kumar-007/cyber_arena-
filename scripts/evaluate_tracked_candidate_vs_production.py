@@ -123,6 +123,24 @@ def group_deltas(
     ]
 
 
+def count_critical_regressions(
+    attacker_win_ci: dict[str, float],
+    defender_success_ci: dict[str, float],
+    *,
+    reward_acceptable: bool,
+) -> int:
+    """Count performance dimensions whose entire 95% CI shows a regression.
+
+    A CI that overlaps zero is inconclusive and fails the promotion gate, but
+    is not labelled as a demonstrated regression. A fully negative role CI or
+    reward failure counts as a critical regression for the safety record.
+    """
+    role_regressions = int(attacker_win_ci["upper_95pct"] < 0) + int(
+        defender_success_ci["upper_95pct"] < 0
+    )
+    return role_regressions + int(not reward_acceptable)
+
+
 def paired_metric(
     baseline_values: Sequence[float],
     candidate_values: Sequence[float],
@@ -344,6 +362,10 @@ def main() -> int:
         acceptance_errors.append("attacker cross-play lower 95% CI is not strictly positive")
     if defender_success["paired_hierarchical_bootstrap_95pct_ci"]["lower_95pct"] <= 0:
         acceptance_errors.append("defender cross-play lower 95% CI is not strictly positive")
+    if attacker_win["paired_hierarchical_bootstrap_95pct_ci"]["upper_95pct"] < 0:
+        acceptance_errors.append("attacker cross-play 95% CI is entirely below zero")
+    if defender_success["paired_hierarchical_bootstrap_95pct_ci"]["upper_95pct"] < 0:
+        acceptance_errors.append("defender cross-play 95% CI is entirely below zero")
     if candidate_latency_p95 > 100.0:
         acceptance_errors.append("candidate p95 inference latency exceeds 100 ms")
     if candidate_invalid:
@@ -359,6 +381,11 @@ def main() -> int:
     )
     if not reward_acceptable:
         acceptance_errors.append("attacker or defender reward lower 95% CI shows a regression worse than -5.0")
+    critical_regression_count = count_critical_regressions(
+        attacker_win["paired_hierarchical_bootstrap_95pct_ci"],
+        defender_success["paired_hierarchical_bootstrap_95pct_ci"],
+        reward_acceptable=reward_acceptable,
+    )
 
     paired_episodes = len(holdout_seeds)
     report = {
@@ -433,7 +460,7 @@ def main() -> int:
                 "runtime_load_smoke_passed": True,
                 "invalid_action_count": candidate_invalid,
                 "non_finite_output_count": candidate_non_finite,
-                "critical_regression_count": 0 if reward_acceptable else 1,
+                "critical_regression_count": critical_regression_count,
             },
             "environment_version": ENVIRONMENT_VERSION,
             "feature_schema_version": FEATURE_SCHEMA_VERSION,
