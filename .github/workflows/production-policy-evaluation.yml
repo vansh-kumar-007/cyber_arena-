@@ -55,15 +55,17 @@ jobs:
           from urllib.request import Request, urlopen
           from pathlib import Path
 
+          import hashlib
+
           url = "https://cyberarena-api.onrender.com/health"
-          result = {"probe_success": False, "url": url}
+          memory_url = "https://cyberarena-api.onrender.com/memory?limit=1"
+          result = {"probe_success": False, "url": url, "memory_read_success": False}
           for attempt in range(1, 6):
               try:
                   request = Request(url, headers={"Accept": "application/json"}, method="GET")
                   with urlopen(request, timeout=45) as response:
                       body = json.loads(response.read().decode("utf-8"))
-                      result = {
-                          "probe_success": response.status == 200,
+                      result.update({
                           "status_code": response.status,
                           "url": url,
                           "attempt": attempt,
@@ -76,18 +78,58 @@ jobs:
                               "memory_write_errors": body.get("memory_write_errors"),
                               "memory_storage": body.get("memory_storage"),
                           },
-                      }
+                      })
                   break
               except Exception as exc:
                   result = {
                       "probe_success": False,
                       "url": url,
+                      "memory_read_success": False,
                       "attempt": attempt,
                       "error_type": type(exc).__name__,
                       "error": str(exc)[:500],
                   }
                   if attempt < 5:
                       time.sleep(2)
+
+          if result.get("health", {}).get("ready") is True:
+              try:
+                  request = Request(memory_url, headers={"Accept": "application/json"}, method="GET")
+                  with urlopen(request, timeout=45) as response:
+                      memory_body = json.loads(response.read().decode("utf-8"))
+                      data = memory_body.get("data") or {}
+                      summary = data.get("summary") or {}
+                      experiences = data.get("experiences") or []
+                      sample_id = experiences[0].get("id") if experiences else None
+                      result["memory_read_success"] = (
+                          response.status == 200 and memory_body.get("success") is True
+                      )
+                      result["memory_read"] = {
+                          "status_code": response.status,
+                          "url": memory_url,
+                          "total_experiences": summary.get("total_experiences"),
+                          "persisted_replay_transitions": summary.get("persisted_replay_transitions"),
+                          "replay_transitions_by_agent": summary.get("replay_transitions_by_agent"),
+                          "sample_record_returned": sample_id is not None,
+                          "sample_record_id_sha256": (
+                              hashlib.sha256(str(sample_id).encode("utf-8")).hexdigest()
+                              if sample_id is not None else None
+                          ),
+                          "note": "Only counts and a hash of the sample ID are recorded; experience contents are not copied into CI logs.",
+                      }
+              except Exception as exc:
+                  result["memory_read_success"] = False
+                  result["memory_read"] = {
+                      "url": memory_url,
+                      "error_type": type(exc).__name__,
+                      "error": str(exc)[:500],
+                  }
+
+          result["probe_success"] = (
+              result.get("status_code") == 200
+              and result.get("health", {}).get("ready") is True
+              and result.get("memory_read_success") is True
+          )
           Path("artifacts/render-live-health.json").write_text(
               json.dumps(result, indent=2, sort_keys=True) + chr(10),
               encoding="utf-8",
