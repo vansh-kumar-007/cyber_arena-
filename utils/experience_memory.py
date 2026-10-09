@@ -24,11 +24,24 @@ def _json(value: Any) -> str:
 class ExperienceMemory:
     """SQLite-backed store for task episodes, failures, and learned lessons."""
 
-    def __init__(self, path: str | os.PathLike[str] | None = None) -> None:
+    def __init__(
+        self,
+        path: str | os.PathLike[str] | None = None,
+        *,
+        unlinked_limit: int | None = None,
+    ) -> None:
         configured = path if path is not None else os.environ.get("CYBERARENA_MEMORY_DB")
         if configured is None or str(configured).strip() == "":
             configured = Path(__file__).resolve().parents[1] / "data" / "agent_memory.sqlite3"
         self.path = ":memory:" if str(configured) == ":memory:" else str(Path(configured).expanduser())
+        configured_limit = unlinked_limit
+        if configured_limit is None:
+            configured_limit = int(os.environ.get("CYBERARENA_UNLINKED_EXPERIENCE_LIMIT", "20000"))
+        if (not isinstance(configured_limit, int) or isinstance(configured_limit, bool)
+                or not 1 <= configured_limit <= 1_000_000):
+            raise ValueError("unlinked_limit must be an integer between 1 and 1000000")
+        self.unlinked_record_limit = configured_limit
+        self._records_since_prune = 0
         if self.path != ":memory:":
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
@@ -75,9 +88,46 @@ class ExperienceMemory:
                 );
                 CREATE INDEX IF NOT EXISTS idx_replay_context
                     ON replay_transitions(agent, context, id DESC);
+                CREATE INDEX IF NOT EXISTS idx_replay_experience
+                    ON replay_transitions(experience_id);
                 """
             )
             self._connection.commit()
+            # Trim an existing database at startup. Replay-linked episodes are retained.
+            with self._connection:
+                self._prune_unlinked_locked()
+
+    def _prune_unlinked_locked(self, *, exclude_id: str | None = None) -> int:
+        """Keep only the newest unlinked episodes; caller holds the connection lock."""
+        if exclude_id is None:
+            cursor = self._connection.execute(
+                """DELETE FROM experiences
+                   WHERE id IN (
+                       SELECT e.id FROM experiences AS e
+                       WHERE NOT EXISTS (
+                           SELECT 1 FROM replay_transitions AS r WHERE r.experience_id = e.id
+                       )
+                       ORDER BY e.created_at DESC, e.id DESC
+                       LIMIT -1 OFFSET ?
+                   )""",
+                (self.unlinked_record_limit,),
+            )
+        else:
+            # Preserve the just-inserted row until the caller has a chance to attach
+            # its replay transition, even when this write triggers pruning.
+            cursor = self._connection.execute(
+                """DELETE FROM experiences
+                   WHERE id IN (
+                       SELECT e.id FROM experiences AS e
+                       WHERE e.id != ? AND NOT EXISTS (
+                           SELECT 1 FROM replay_transitions AS r WHERE r.experience_id = e.id
+                       )
+                       ORDER BY e.created_at DESC, e.id DESC
+                       LIMIT -1 OFFSET ?
+                   )""",
+                (exclude_id, max(0, self.unlinked_record_limit - 1)),
+            )
+        return cursor.rowcount
 
     def close(self) -> None:
         with self._lock:
@@ -129,6 +179,10 @@ class ExperienceMemory:
                         :outcome, :reward, :error_type, :lesson, :tags, :metadata)""",
                 entry,
             )
+            self._records_since_prune += 1
+            if self._records_since_prune >= 1000:
+                self._prune_unlinked_locked(exclude_id=entry["id"])
+                self._records_since_prune = 0
         return self._public(entry)
 
     @staticmethod
