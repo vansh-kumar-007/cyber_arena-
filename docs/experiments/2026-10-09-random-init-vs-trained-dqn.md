@@ -1,3 +1,5 @@
+> This was the initial single-seed pilot. The subsequent three-training-seed replication and aggregate uncertainty analysis supersede it for judging repeatability: [multi-seed report](2026-10-09-multi-seed-dqn-evaluation.md).
+
 # Cyber Arena DQN Evaluation — Random Initialization vs Trained Candidate
 
 **Experiment status:** completed; candidate **not promoted**  
