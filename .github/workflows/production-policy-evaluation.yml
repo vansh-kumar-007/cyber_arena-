@@ -89,7 +89,7 @@ jobs:
                   if attempt < 5:
                       time.sleep(2)
           Path("artifacts/render-live-health.json").write_text(
-              json.dumps(result, indent=2, sort_keys=True) + "\\n",
+              json.dumps(result, indent=2, sort_keys=True) + chr(10),
               encoding="utf-8",
           )
           print(json.dumps(result, indent=2, sort_keys=True))
