@@ -36,6 +36,12 @@ def api_client(monkeypatch):
                 "att_memory": 0,
                 "def_memory": 0,
                 "models_loaded": True,
+                "active_model_id": None,
+                "loaded_model_id": "legacy:test-attacker|test-defender",
+                "loaded_policy_source": "legacy",
+                "loaded_checkpoint_sha256": {"attacker": "a" * 64, "defender": "b" * 64},
+                "policy_consistent": True,
+                "model_registry_error": False,
                 "state_size": 37,
                 "n_attackers": 1,
                 "n_defenders": 1,
@@ -75,6 +81,10 @@ def test_health_and_read_only_memory_routes(api_client):
     assert health.json()["readiness"] == "ready"
     assert health.json()["memory_write_errors"] == 0
     assert health.json()["state_size"] == 37
+    assert health.json()["policy_consistent"] is True
+    assert health.json()["loaded_policy_source"] == "legacy"
+    assert health.json()["loaded_model_id"] == "legacy:test-attacker|test-defender"
+    assert health.json()["model_registry_error"] is False
 
     response = client.get("/memory?limit=10")
     assert response.status_code == 200
@@ -144,3 +154,27 @@ def test_health_reports_memory_write_failures_as_not_ready(api_client):
     assert response.json()["ready"] is False
     assert response.json()["readiness"] == "degraded"
     assert response.json()["memory_write_errors"] == 1
+
+
+
+def test_health_marks_external_registry_promotion_not_ready_until_loaded(api_client, monkeypatch):
+    client, api_module = api_client
+    original_status = api_module.sim.status
+
+    def status_with_pointer_mismatch():
+        return {
+            **original_status(),
+            "active_model_id": "candidate-v2",
+            "loaded_model_id": "stable-v1",
+            "policy_consistent": False,
+        }
+
+    monkeypatch.setattr(api_module.sim, "status", status_with_pointer_mismatch)
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json()["ready"] is False
+    assert response.json()["readiness"] == "degraded"
+    assert response.json()["active_model_id"] == "candidate-v2"
+    assert response.json()["loaded_model_id"] == "stable-v1"
+    assert response.json()["policy_consistent"] is False
