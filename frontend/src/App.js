@@ -1669,17 +1669,17 @@ useEffect(() => {
           <motion.button
             whileHover={apiConnected ? { scale: 1.05 } : {}}
             disabled={!apiConnected}
-            aria-label={apiConnected ? "Enable real DQN mode" : "Real DQN unavailable; backend API is disconnected"}
+            aria-label={!apiConnected ? "Real DQN unavailable; backend API is disconnected" : modelsLoaded ? "Enable real DQN mode" : "No trained checkpoint is loaded for the server scenario; start will verify the selected match"}
             onClick={() => { if (apiConnected) setUseRealAI(true); }}
             style={{
               background: useRealAI ? COLORS.purple : "transparent",
-              border: `1px solid ${apiConnected ? COLORS.purple : COLORS.gray}`,
-              color: useRealAI ? COLORS.white : apiConnected ? COLORS.purple : COLORS.gray,
+              border: `1px solid ${apiConnected ? (modelsLoaded ? COLORS.purple : COLORS.orange) : COLORS.gray}`,
+              color: useRealAI ? COLORS.white : apiConnected ? (modelsLoaded ? COLORS.purple : COLORS.orange) : COLORS.gray,
               fontFamily: PIXEL_FONT, fontSize: "9px",
               padding: "4px 10px", cursor: apiConnected ? "pointer" : "not-allowed",
               opacity: apiConnected ? 1 : 0.6,
             }}
-          >🧠 REAL DQN {apiConnected ? "●" : "○"}</motion.button>
+          >🧠 REAL DQN {apiConnected ? (modelsLoaded ? "●" : "⚠") : "○"}</motion.button>
         </div>
 
       </div>
