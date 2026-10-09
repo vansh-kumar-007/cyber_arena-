@@ -99,8 +99,11 @@ class ExperienceMemory:
         required = {"agent": agent, "task": task, "outcome": outcome, "lesson": lesson}
         if any(not isinstance(v, str) or not v.strip() for v in required.values()):
             raise ValueError("agent, task, outcome, and lesson must be non-empty strings")
-        if reward is not None and (isinstance(reward, bool) or not isinstance(reward, (int, float))):
-            raise ValueError("reward must be numeric or None")
+        if reward is not None and (
+            isinstance(reward, bool) or not isinstance(reward, (int, float))
+            or not math.isfinite(float(reward))
+        ):
+            raise ValueError("reward must be a finite number or None")
         entry = {
             "id": str(uuid.uuid4()),
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -159,8 +162,8 @@ class ExperienceMemory:
             raise ValueError("agent must be attacker or defender")
         if not isinstance(context, str) or not context.strip():
             raise ValueError("context must be a non-empty string")
-        if not isinstance(action, int) or isinstance(action, bool) or action < 0:
-            raise ValueError("action must be a non-negative integer")
+        if not isinstance(action, int) or isinstance(action, bool) or not 0 <= action < 12:
+            raise ValueError("action must be an integer from 0 through 11")
         if not isinstance(capacity, int) or isinstance(capacity, bool) or not 1 <= capacity <= 100000:
             raise ValueError("capacity must be between 1 and 100000")
         state_values = [float(value) for value in state]
