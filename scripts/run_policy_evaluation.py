@@ -162,8 +162,8 @@ def main() -> int:
         folder.mkdir(parents=True, exist_ok=True)
 
     context = "1v1"
-    # Build the baseline first. This is a random-initialization baseline, because
-    # no tracked production checkpoint is available in the repository.
+    # Use the random-initialization baseline deliberately to isolate the training
+    # effect. It is not a comparison against the tracked production checkpoint pair.
     train_dqn._seed_everything(args.seed)
     probe_env = NetworkEnvironment(n_attackers=1, n_defenders=1, seed=args.seed, max_steps=50)
     state_size = len(probe_env.reset(seed=args.seed))
@@ -325,7 +325,7 @@ def main() -> int:
             "reason": "This isolated baseline experiment provides evidence only for the tested seed suite; deployment promotion requires separate approval and multi-seed acceptance criteria.",
         },
         "limitations": [
-            "No production-trained checkpoint was tracked in the inspected repository; baseline is the same random initialization that starts candidate training.",
+            "This experiment intentionally compares against the same random initialization that starts candidate training; it does not measure performance versus the tracked production policy.",
             "A single 1v1 scenario and one training seed do not establish generalization to other team sizes or environments.",
             "Candidate and baseline win-rate differences are paired by held-out environment seed; the bootstrap CI and exact McNemar test quantify sampling uncertainty, not all sources of uncertainty.",
             "This benchmark does not verify production database durability or restart recovery.",
