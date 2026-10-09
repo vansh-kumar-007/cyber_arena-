@@ -134,3 +134,39 @@ def test_replay_rejects_invalid_transitions(tmp_path):
             reward=0, next_state=[0], terminal=False,
         )
     memory.close()
+
+
+def test_unlinked_history_is_bounded_but_replay_linked_records_are_retained(tmp_path):
+    memory = ExperienceMemory(tmp_path / "bounded.sqlite3", unlinked_limit=2)
+    older = memory.record(agent="attacker", task="older", state_summary={}, action=0,
+                          outcome="neutral", lesson="Older unlinked record.")
+    newer = memory.record(agent="attacker", task="newer", state_summary={}, action=1,
+                          outcome="neutral", lesson="Newer unlinked record.")
+    # The periodic prune runs once every 1000 writes; emulate that boundary.
+    memory._records_since_prune = 999
+    current = memory.record(agent="attacker", task="current", state_summary={}, action=2,
+                            outcome="neutral", lesson="Current record before replay attachment.")
+    unlinked = memory.list(limit=10)
+    assert {entry["id"] for entry in unlinked} == {newer["id"], current["id"]}
+    assert all(entry["id"] != older["id"] for entry in unlinked)
+
+    linked = memory.record(agent="defender", task="replay-linked", state_summary={}, action=0,
+                           outcome="neutral", lesson="Retain this transition-backed record.")
+    memory.remember_transition(agent="defender", context="1v1", state=[0.0], action=0,
+                               reward=0.0, next_state=[0.1], terminal=False,
+                               experience_id=linked["id"], capacity=2)
+    # Reinitialize applies retention to persisted unlinked records, but must keep
+    # the experience referenced by replay so it remains auditable and deletable.
+    memory.close()
+    reopened = ExperienceMemory(tmp_path / "bounded.sqlite3", unlinked_limit=2)
+    ids = {entry["id"] for entry in reopened.list(limit=10)}
+    assert linked["id"] in ids
+    assert len([entry for entry in reopened.list(limit=10) if entry["id"] != linked["id"]]) <= 2
+    reopened.close()
+
+
+def test_unlinked_limit_configuration_is_validated(tmp_path):
+    with pytest.raises(ValueError):
+        ExperienceMemory(tmp_path / "bad-limit.sqlite3", unlinked_limit=0)
+    with pytest.raises(ValueError):
+        ExperienceMemory(tmp_path / "bad-limit-2.sqlite3", unlinked_limit=1_000_001)
