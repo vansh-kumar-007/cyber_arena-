@@ -20,6 +20,12 @@ from typing import Sequence
 import numpy as np
 import torch
 
+# Running this file directly sets sys.path[0] to scripts/, so add the repository
+# root before importing the project's modules.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 import train_dqn
 from agents.dqn_attacker import DQNAttacker
 from agents.dqn_defender import DQNDefender
