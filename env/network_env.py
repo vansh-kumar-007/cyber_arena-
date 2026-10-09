@@ -121,7 +121,7 @@ class NetworkEnvironment:
             total_def_reward += def_reward
 
         # ─── END CONDITIONS ───────────────────────────────────────────────────
-        if self.current_step >= 200:
+        if self.current_step >= self.max_steps:
             done = True
 
         critical_nodes = [n for n in self.nodes if self.nodes[n]["critical"]]
