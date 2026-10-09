@@ -7,7 +7,6 @@ import secrets
 import threading
 from typing import Literal
 
-import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -184,4 +183,5 @@ def reset_memory(
 
 
 if __name__ == "__main__":
+    import uvicorn
     uvicorn.run("api.main:app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")), reload=False)
