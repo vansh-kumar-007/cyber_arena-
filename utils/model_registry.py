@@ -100,6 +100,7 @@ class ModelRegistry:
         defender_path: str,
         training_run_id: str,
         training_config: dict[str, Any],
+        scenario_context: str = "1v1",
         evaluation: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if not model_id or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-" for ch in model_id):
@@ -117,6 +118,7 @@ class ModelRegistry:
             "defender_sha256": sha256_file(defender),
             "training_run_id": training_run_id,
             "training_config": training_config,
+            "scenario_context": scenario_context,
             "environment_version": ENVIRONMENT_VERSION,
             "feature_schema_version": FEATURE_SCHEMA_VERSION,
             "action_schema_version": ACTION_SCHEMA_VERSION,
