@@ -17,6 +17,7 @@ from agents.dqn_defender import DQNDefender
 from configs.network_config import ATTACK_TYPES, DEFENSE_TYPES
 from env.network_env import NetworkEnvironment
 from utils.experience_memory import ExperienceMemory
+from utils.model_paths import resolve_model_dir
 from utils.metrics import Metrics
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -120,7 +121,7 @@ def train_marl(
         _seed_everything(seed)
 
     context = f"{n_attackers}v{n_defenders}"
-    model_dir = PROJECT_ROOT / "models"
+    model_dir = resolve_model_dir(PROJECT_ROOT)
     attacker_checkpoint = model_dir / f"marl_{context}_attacker.pt"
     defender_checkpoint = model_dir / f"marl_{context}_defender.pt"
     if resume:
