@@ -64,6 +64,7 @@ def evaluate_pair(
     steps_list: list[int] = []
     detections_list: list[int] = []
     wins = 0
+    wins_by_episode: list[int] = []
     for index in range(episodes):
         episode_seed = (seed + index) % (2**32 - 1)
         env = NetworkEnvironment(n_attackers=1, n_defenders=1, seed=episode_seed, max_steps=50)
@@ -83,7 +84,9 @@ def evaluate_pair(
         rewards_def.append(total_def)
         steps_list.append(step_count)
         detections_list.append(int(info["detection_count"]))
-        wins += int(bool(info["attacker_won"]))
+        episode_won = int(bool(info["attacker_won"]))
+        wins += episode_won
+        wins_by_episode.append(episode_won)
 
     return {
         "policy": name,
@@ -94,6 +97,9 @@ def evaluate_pair(
         "episode_seeds": [((seed + i) % (2**32 - 1)) for i in range(episodes)],
         "attacker_win_rate": wins / episodes,
         "attacker_win_rate_95pct_wilson": wilson_interval(wins, episodes),
+        # Retain seed-aligned outcomes so the caller can perform paired statistical
+        # comparisons instead of relying only on separate marginal win-rate intervals.
+        "attacker_wins_by_episode": wins_by_episode,
         "mean_attacker_reward": mean(rewards_att),
         "mean_defender_reward": mean(rewards_def),
         "median_episode_steps": median(steps_list),
