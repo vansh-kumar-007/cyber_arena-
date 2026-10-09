@@ -7,6 +7,7 @@ torch = pytest.importorskip("torch")
 
 import train_dqn
 from agents.dqn_attacker import DQNAttacker
+from api.simulation import SimulationManager
 from utils.experience_memory import ExperienceMemory
 
 
@@ -39,6 +40,14 @@ def test_short_run_trains_and_persists_replay_and_checkpoints(tmp_path, monkeypa
     defender_path = tmp_path / "models" / "final_marl_defender_2v2_defender.pt"
     assert attacker_path.is_file()
     assert defender_path.is_file()
+
+    # The API must load the requested scenario's checkpoint pair.
+    manager = SimulationManager(memory=memory, model_dir=tmp_path / "models", seed=2026)
+    selected = manager.reset(seed=2026, n_attackers=2, n_defenders=2)
+    assert selected["n_attackers"] == 2
+    assert selected["n_defenders"] == 2
+    assert selected["state_size"] == 37
+    assert selected["models_loaded"] is True
 
     restored = DQNAttacker(state_size=37)
     restored.load(str(attacker_path))
