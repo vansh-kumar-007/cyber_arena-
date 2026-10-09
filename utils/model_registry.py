@@ -252,6 +252,9 @@ class ModelRegistry:
             elif key in {"attacker_crossplay_win_rate_delta_ci95", "defender_crossplay_success_rate_delta_ci95"}:
                 if float(value[0]) <= 0:
                     errors.append(f"{key} lower 95% confidence bound must be > 0")
+            elif key in {"attacker_mean_reward_delta_ci95", "defender_mean_reward_delta_ci95"}:
+                if float(value[0]) <= -5.0:
+                    errors.append(f"{key} lower 95% confidence bound must be > -5.0")
 
         latency = metrics.get("inference_p95_latency_ms")
         if (
