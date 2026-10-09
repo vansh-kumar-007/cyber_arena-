@@ -638,7 +638,7 @@ function NeuralNetModal({ onClose, lastAttack, lastDefense, step }) {
             transition={{ duration: 2, repeat: Infinity }}
             style={{ color: COLORS.green, fontFamily: PIXEL_FONT, fontSize: "14px", letterSpacing: "4px" }}
           >
-            ► DQN NEURAL NETWORK — LIVE VIEW
+            ► DQN NETWORK — SCHEMATIC VIEW
           </motion.div>
           <motion.button
             whileHover={{ scale: 1.1, boxShadow: `0 0 12px ${COLORS.red}` }}
@@ -659,7 +659,7 @@ function NeuralNetModal({ onClose, lastAttack, lastDefense, step }) {
           marginBottom: "16px", flexWrap: "wrap"
         }}>
           {[
-            { label: "ARCHITECTURE", value: "29 → 128 → 128 → 12", color: COLORS.green },
+            { label: "ARCHITECTURE", value: "37 → 128 → 128 → 12", color: COLORS.green },
             { label: "ALGORITHM", value: "Deep Q-Network (DQN)", color: COLORS.purple },
             { label: "OPTIMIZER", value: "Adam (lr=0.0005)", color: COLORS.blue },
             { label: "REPLAY BUFFER", value: "10,000 experiences", color: COLORS.yellow },
@@ -761,14 +761,14 @@ function NeuralNetVisualizer({ lastAttack, lastDefense, step }) {
               color: COLORS.gray, fontFamily: PIXEL_FONT,
               fontSize: "9px", letterSpacing: "2px"
             }}>
-              ► DQN NEURAL NETWORK — LIVE
+              ► DQN STRUCTURE — ILLUSTRATIVE
             </div>
             <motion.div
               animate={{ opacity: [1, 0.3, 1] }}
               transition={{ duration: 1.5, repeat: Infinity }}
               style={{ color: COLORS.green, fontFamily: PIXEL_FONT, fontSize: "8px" }}
             >
-              🔍 CLICK TO EXPAND
+              SCHEMATIC · CLICK TO EXPAND
             </motion.div>
           </div>
 
@@ -1386,6 +1386,8 @@ const saveSession = useCallback((state, log) => {
       battleLog: [],
       redRewards: [],
       blueRewards: [],
+      episodeDone: false,
+      decisionContext: null,
     }));
   };
 
@@ -1451,6 +1453,8 @@ const saveSession = useCallback((state, log) => {
               redScore: newRedScore,
               blueScore: newBlueScore,
               step: data.step || prev.step + 1,
+              episodeDone: !!data.done,
+              decisionContext: data.decision_context || prev.decisionContext,
               lastAttack: attack,
               lastDefense: defense,
               lastEvent: null,
@@ -1492,7 +1496,7 @@ const saveSession = useCallback((state, log) => {
 
 // Auto-save when game ends
 useEffect(() => {
-  if (!gameState.isRunning && gameState.step >= 200) {
+  if (!gameState.isRunning && (gameState.step >= 200 || gameState.episodeDone)) {
     saveSession(gameState, fullLog);
   }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1652,6 +1656,40 @@ useEffect(() => {
         nAttackers={gameState.nAttackers}
         nDefenders={gameState.nDefenders}
       />
+
+      {useRealAI && gameState.decisionContext && (
+        <PixelBorder color={COLORS.purple} style={{ padding: "12px", marginBottom: "10px" }}>
+          <div style={{ color: COLORS.purple, fontSize: "10px", letterSpacing: "2px", marginBottom: "7px" }}>WHY THESE ACTIONS? · EVIDENCE SUMMARY</div>
+          <div style={{ color: COLORS.white, fontSize: "10px", lineHeight: 1.6 }}>{gameState.decisionContext.explanation}</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "10px", marginTop: "10px" }}>
+            {[
+              { name: "ATTACKER Q-VALUE ESTIMATES", items: gameState.decisionContext.attacker_top_actions || [], color: COLORS.red },
+              { name: "DEFENDER Q-VALUE ESTIMATES", items: gameState.decisionContext.defender_top_actions || [], color: COLORS.blue },
+            ].map(group => (
+              <div key={group.name} style={{ border: `1px solid ${COLORS.border}`, padding: "8px" }}>
+                <div style={{ color: group.color, fontSize: "8px", marginBottom: "6px" }}>{group.name}</div>
+                {group.items.map(item => (
+                  <div key={item.id} style={{ display: "flex", justifyContent: "space-between", gap: "8px", color: COLORS.gray, fontSize: "9px", margin: "4px 0" }}>
+                    <span>{item.name}</span><strong style={{ color: COLORS.white }}>{Number(item.q_value).toFixed(3)}</strong>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+          {(gameState.decisionContext.precedents || []).length > 0 && (
+            <details style={{ marginTop: "8px", color: COLORS.gray, fontSize: "9px" }}>
+              <summary style={{ cursor: "pointer" }}>See {gameState.decisionContext.precedents.length} related stored episode(s)</summary>
+              {(gameState.decisionContext.precedents || []).map(item => (
+                <div key={item.id} style={{ borderTop: `1px solid ${COLORS.border}`, padding: "6px 0" }}>
+                  <strong style={{ color: item.outcome === "failure" ? COLORS.red : item.outcome === "success" ? COLORS.green : COLORS.white }}>{item.agent} · {item.outcome} · reward {item.reward == null ? "n/a" : Number(item.reward).toFixed(2)}</strong>
+                  <div>{item.lesson}</div>
+                </div>
+              ))}
+              <div style={{ marginTop: "5px" }}>Historical precedents are context, not a causal explanation or a policy override.</div>
+            </details>
+          )}
+        </PixelBorder>
+      )}
 
       <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "10px" }}>
         <button type="button" onClick={() => setShowAgentMemory(value => !value)} style={{
