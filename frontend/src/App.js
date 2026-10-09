@@ -1140,6 +1140,188 @@ function LogViewer({ sessions, onClose }) {
   );
 }
 
+function AgentMemoryPanel() {
+  const [experiences, setExperiences] = useState([]);
+  const [summary, setSummary] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [query, setQuery] = useState("");
+  const [matches, setMatches] = useState(null);
+  const [adminToken, setAdminToken] = useState("");
+  const [editingId, setEditingId] = useState(null);
+  const [editingLesson, setEditingLesson] = useState("");
+
+  const loadMemories = useCallback(async () => {
+    setLoading(true);
+    try {
+      const response = await fetch(`${API_URL}/memory?limit=25`);
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail || `Unable to load memory (HTTP ${response.status})`);
+      setExperiences(body.data?.experiences || []);
+      setSummary(body.data?.summary || null);
+      setError("");
+    } catch (err) {
+      setError(err.message || "Memory service is unavailable.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadMemories(); }, [loadMemories]);
+
+  const searchMemories = async (event) => {
+    event.preventDefault();
+    if (!query.trim()) {
+      setMatches(null);
+      return;
+    }
+    try {
+      const response = await fetch(`${API_URL}/memory/search?q=${encodeURIComponent(query.trim())}&limit=10`);
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail || `Search failed (HTTP ${response.status})`);
+      setMatches(body.data?.matches || []);
+      setError("");
+    } catch (err) {
+      setError(err.message || "Memory search failed.");
+    }
+  };
+
+  const adminRequest = async (path, method, payload) => {
+    if (!adminToken.trim()) {
+      setError("Enter the server-configured admin token to change stored memories.");
+      return;
+    }
+    try {
+      const response = await fetch(`${API_URL}${path}`, {
+        method,
+        headers: {
+          "Content-Type": "application/json",
+          "X-Admin-Token": adminToken,
+        },
+        body: payload === undefined ? undefined : JSON.stringify(payload),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || `Request failed (HTTP ${response.status})`);
+      setError("");
+      setEditingId(null);
+      await loadMemories();
+      return body.data;
+    } catch (err) {
+      setError(err.message || "Memory administration failed.");
+    }
+  };
+
+  const resetMemories = async () => {
+    if (window.confirm("Permanently delete every saved agent experience? This cannot be undone.")) {
+      await adminRequest("/memory?confirm=true", "DELETE");
+    }
+  };
+
+  const displayed = matches === null ? experiences : matches;
+  const panelStyle = {
+    background: COLORS.panel,
+    border: `1px solid ${COLORS.border}`,
+    borderRadius: "6px",
+    padding: "14px",
+    margin: "12px 0",
+    fontFamily: PIXEL_FONT,
+  };
+  const smallButton = {
+    background: "transparent",
+    border: `1px solid ${COLORS.green}`,
+    color: COLORS.green,
+    fontFamily: PIXEL_FONT,
+    fontSize: "9px",
+    padding: "5px 8px",
+    cursor: "pointer",
+  };
+  const fieldStyle = {
+    background: COLORS.bg,
+    color: COLORS.white,
+    border: `1px solid ${COLORS.border}`,
+    padding: "7px",
+    fontFamily: PIXEL_FONT,
+    fontSize: "10px",
+    minWidth: 0,
+  };
+
+  return (
+    <section style={panelStyle} aria-label="Agent memory and learning">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+        <div style={{ color: COLORS.green, fontSize: "12px", letterSpacing: "2px" }}>AGENT MEMORY & LEARNING</div>
+        <button type="button" onClick={loadMemories} style={smallButton}>↻ REFRESH</button>
+      </div>
+      <p style={{ color: COLORS.gray, fontSize: "10px", lineHeight: 1.6 }}>
+        Saved episodes survive API restarts when the configured database uses persistent storage.
+        These are observed outcomes and reviewable lessons—not hidden reasoning or proof of cause.
+        The deployed DQN is inference-only; these records do not directly change its policy.
+      </p>
+      {summary && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: "8px", marginBottom: "12px" }}>
+          {[
+            ["EXPERIENCES", summary.total_experiences ?? 0],
+            ["SUCCESSFUL OUTCOMES", summary.successful_outcomes ?? 0],
+            ["FAILED OUTCOMES", summary.failed_outcomes ?? 0],
+            ["ACTIVE LESSONS", summary.active_lessons ?? 0],
+            ["OBSERVED SUCCESS", summary.observed_success_rate == null ? "—" : `${(summary.observed_success_rate * 100).toFixed(1)}%`],
+          ].map(([label, value]) => (
+            <div key={label} style={{ border: `1px solid ${COLORS.border}`, padding: "8px" }}>
+              <div style={{ color: COLORS.gray, fontSize: "8px", marginBottom: "5px" }}>{label}</div>
+              <div style={{ color: COLORS.white, fontSize: "14px" }}>{value}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      <form onSubmit={searchMemories} style={{ display: "flex", gap: "8px", marginBottom: "10px" }}>
+        <input aria-label="Search stored lessons" value={query} onChange={e => setQuery(e.target.value)} placeholder="Search actions, nodes, failures, lessons…" style={{ ...fieldStyle, flex: 1 }} />
+        <button type="submit" style={smallButton}>SEARCH</button>
+        {matches !== null && <button type="button" style={smallButton} onClick={() => setMatches(null)}>CLEAR</button>}
+      </form>
+      {error && <div role="alert" style={{ color: COLORS.orange, fontSize: "10px", padding: "8px 0" }}>{error}</div>}
+      {loading && <div style={{ color: COLORS.gray, fontSize: "10px" }}>Loading saved experiences…</div>}
+      {!loading && displayed.length === 0 && <div style={{ color: COLORS.gray, fontSize: "10px" }}>No stored experiences match this view yet. Start a REAL DQN battle to record outcomes.</div>}
+      <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+        {displayed.map(entry => (
+          <article key={entry.id} style={{ border: `1px solid ${COLORS.border}`, padding: "10px", borderLeft: `3px solid ${entry.outcome === "failure" ? COLORS.red : entry.outcome === "success" ? COLORS.green : COLORS.gray}` }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+              <strong style={{ color: entry.agent === "attacker" ? COLORS.red : COLORS.blue, fontSize: "10px" }}>{(entry.agent || "agent").toUpperCase()}</strong>
+              <span style={{ color: entry.outcome === "failure" ? COLORS.red : entry.outcome === "success" ? COLORS.green : COLORS.gray, fontSize: "9px" }}>
+                {(entry.outcome || "observed").toUpperCase()} · reward {entry.reward == null ? "n/a" : Number(entry.reward).toFixed(2)}
+              </span>
+              <span style={{ color: COLORS.gray, fontSize: "8px" }}>{entry.created_at ? new Date(entry.created_at).toLocaleString() : ""}</span>
+            </div>
+            <div style={{ color: COLORS.white, fontSize: "10px", margin: "7px 0" }}>{entry.task}</div>
+            {editingId === entry.id ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                <textarea aria-label="Edit stored lesson" value={editingLesson} onChange={e => setEditingLesson(e.target.value)} maxLength={4000} rows={3} style={{ ...fieldStyle, resize: "vertical" }} />
+                <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                  <button type="button" style={smallButton} onClick={() => adminRequest(`/memory/${encodeURIComponent(entry.id)}`, "PATCH", { lesson: editingLesson })}>SAVE LESSON</button>
+                  <button type="button" style={smallButton} onClick={() => setEditingId(null)}>CANCEL</button>
+                </div>
+              </div>
+            ) : <div style={{ color: COLORS.gray, fontSize: "9px", lineHeight: 1.6 }}>{entry.lesson}</div>}
+            {entry.error_type && <div style={{ color: COLORS.orange, fontSize: "9px", marginTop: "5px" }}>Issue: {entry.error_type}</div>}
+            <div style={{ display: "flex", gap: "6px", marginTop: "8px", flexWrap: "wrap" }}>
+              <button type="button" style={smallButton} onClick={() => { setEditingId(entry.id); setEditingLesson(entry.lesson || ""); }}>EDIT LESSON</button>
+              <button type="button" style={smallButton} onClick={() => adminRequest(`/memory/${encodeURIComponent(entry.id)}`, "PATCH", { lesson_status: entry.lesson_status === "deprecated" ? "active" : "deprecated" })}>
+                {entry.lesson_status === "deprecated" ? "REACTIVATE" : "DEPRECATE"}
+              </button>
+              <button type="button" style={{ ...smallButton, borderColor: COLORS.red, color: COLORS.red }} onClick={() => {
+                if (window.confirm("Delete this experience permanently?")) adminRequest(`/memory/${encodeURIComponent(entry.id)}`, "DELETE");
+              }}>DELETE</button>
+            </div>
+          </article>
+        ))}
+      </div>
+      <div style={{ borderTop: `1px solid ${COLORS.border}`, marginTop: "14px", paddingTop: "12px" }}>
+        <div style={{ color: COLORS.gray, fontSize: "9px", marginBottom: "6px" }}>ADMIN CONTROLS · TOKEN IS SENT TO THE SERVER ONLY WHEN YOU USE A PROTECTED ACTION</div>
+        <input type="password" autoComplete="off" aria-label="Memory admin token" value={adminToken} onChange={e => setAdminToken(e.target.value)} placeholder="Server-configured admin token" style={{ ...fieldStyle, width: "100%", boxSizing: "border-box" }} />
+        <button type="button" onClick={resetMemories} style={{ ...smallButton, borderColor: COLORS.red, color: COLORS.red, marginTop: "8px" }}>RESET ALL MEMORY…</button>
+      </div>
+    </section>
+  );
+}
+
 export default function App() {
   const [gameState, setGameState] = useState({
     ...initialState,
@@ -1156,6 +1338,7 @@ export default function App() {
   const intervalRef = useRef(null);
   const [useRealAI, setUseRealAI] = useState(false);
   const [apiConnected, setApiConnected] = useState(false);
+  const [showAgentMemory, setShowAgentMemory] = useState(false);
 
 const saveSession = useCallback((state, log) => {
   const winner = state.redScore > state.blueScore ? "RED" : "BLUE";
@@ -1469,6 +1652,19 @@ useEffect(() => {
         nAttackers={gameState.nAttackers}
         nDefenders={gameState.nDefenders}
       />
+
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "10px" }}>
+        <button type="button" onClick={() => setShowAgentMemory(value => !value)} style={{
+          background: showAgentMemory ? COLORS.green : "transparent",
+          color: showAgentMemory ? COLORS.bg : COLORS.green,
+          border: `1px solid ${COLORS.green}`,
+          padding: "7px 12px",
+          fontFamily: PIXEL_FONT,
+          fontSize: "10px",
+          cursor: "pointer",
+        }}>{showAgentMemory ? "− HIDE AGENT MEMORY" : "◎ AGENT MEMORY & LEARNING"}</button>
+      </div>
+      {showAgentMemory && <AgentMemoryPanel />}
 
       {/* Main Layout */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: "12px" }}>
