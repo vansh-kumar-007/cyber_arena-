@@ -1642,14 +1642,17 @@ useEffect(() => {
             }}
           >SIM</motion.button>
           <motion.button
-            whileHover={{ scale: 1.05 }}
-            onClick={() => setUseRealAI(true)}
+            whileHover={apiConnected ? { scale: 1.05 } : {}}
+            disabled={!apiConnected}
+            aria-label={apiConnected ? "Enable real DQN mode" : "Real DQN unavailable; backend API is disconnected"}
+            onClick={() => { if (apiConnected) setUseRealAI(true); }}
             style={{
               background: useRealAI ? COLORS.purple : "transparent",
               border: `1px solid ${apiConnected ? COLORS.purple : COLORS.gray}`,
               color: useRealAI ? COLORS.white : apiConnected ? COLORS.purple : COLORS.gray,
               fontFamily: PIXEL_FONT, fontSize: "9px",
-              padding: "4px 10px", cursor: "pointer",
+              padding: "4px 10px", cursor: apiConnected ? "pointer" : "not-allowed",
+              opacity: apiConnected ? 1 : 0.6,
             }}
           >🧠 REAL DQN {apiConnected ? "●" : "○"}</motion.button>
         </div>
@@ -1675,6 +1678,12 @@ useEffect(() => {
         nDefenders={gameState.nDefenders}
       />
 
+      {apiError && (
+        <div role="alert" style={{ border: `1px solid ${COLORS.orange}`, color: COLORS.orange, background: COLORS.panel, padding: "10px", marginBottom: "10px", fontSize: "10px", lineHeight: 1.6 }}>
+          {apiError}
+          <button type="button" onClick={checkApiHealth} style={{ marginLeft: "10px", background: "transparent", border: `1px solid ${COLORS.orange}`, color: COLORS.orange, fontFamily: PIXEL_FONT, fontSize: "9px", padding: "4px 8px", cursor: "pointer" }}>RETRY API</button>
+        </div>
+      )}
       {useRealAI && gameState.decisionContext && (
         <PixelBorder color={COLORS.purple} style={{ padding: "12px", marginBottom: "10px" }}>
           <div style={{ color: COLORS.purple, fontSize: "10px", letterSpacing: "2px", marginBottom: "7px" }}>WHY THESE ACTIONS? · EVIDENCE SUMMARY</div>
