@@ -72,6 +72,26 @@ Latest observed frontend audit: 86 advisories (0 critical, 71 high, 12 moderate,
 legacy Create React App toolchain. No blind force-upgrade: a CRA-to-Vite migration needs its own
 compatibility-tested PR.
 
+
+## Current free-tier quotas (checked 2026-10-10)
+
+These providers were considered as alternatives to a paid Render disk. Limits can change; check the
+official plan pages before building around them.
+
+| Service | Documented free-tier limits/behavior | Decision for this project |
+|---|---|---|
+| Render Free web service | 750 instance-hours per workspace/month; spins down after 15 minutes without HTTP/WebSocket traffic and cold start is about a minute; local writes are lost on restart, redeploy or spin-down. Render Free Postgres expires 30 days after creation. | Keep for API compute, but never treat its local SQLite or generated files as durable. Do not create a temporary Postgres database as a production persistence substitute. |
+| Vercel Hobby | Up to 32 builds/hour, 100 deployments/day, one concurrent build, and 45 minutes max build duration per deployment. | Keep frontend; batch commits and avoid rerunning builds during rate limits. A rate-limit check is not grounds to bypass protections. |
+| Supabase Free (evaluated, not provisioned) | Two free projects; 500 MB database size per project then the database becomes read-only; 1 GB storage; inactivity may pause projects after a low-activity seven-day window; downloadable managed backups are not available on Free, so the docs recommend regular CLI dumps stored elsewhere. | Not selected: adds a PostgreSQL migration, credentials and provider coupling; inactivity and backup handling still need an external procedure. SQLite plus private exports is simpler at the current scale. |
+
+Render documents: [Free service limits](https://render.com/docs/free), [Free-tier FAQ](https://render.com/docs/faq).
+Vercel documents: [Hobby build/deployment limits](https://vercel.com/docs/limits).
+Supabase documents: [Free quotas](https://supabase.com/docs/guides/platform/billing-on-supabase),
+[automatic pausing](https://supabase.com/docs/guides/platform/free-project-pausing),
+[backup guidance](https://supabase.com/docs/guides/platform/backups).
+
+These are plan limits, not a claim that the project has consumed any particular amount of quota.
+
 ## Free datastore decision
 
 No external database is added. SQLite remains the simplest fit for one local writer; private versioned

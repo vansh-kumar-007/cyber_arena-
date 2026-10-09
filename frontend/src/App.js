@@ -1297,9 +1297,14 @@ function AgentMemoryPanel() {
         <button type="submit" style={smallButton}>SEARCH</button>
         {matches !== null && <button type="button" style={smallButton} onClick={() => setMatches(null)}>CLEAR</button>}
       </form>
+      {!adminToken.trim() && !error && (
+        <div role="alert" style={{ color: COLORS.orange, fontSize: "10px", padding: "8px 0" }}>
+          Enter the server-configured admin token below, then select REFRESH to view stored records.
+        </div>
+      )}
       {error && <div role="alert" style={{ color: COLORS.orange, fontSize: "10px", padding: "8px 0" }}>{error}</div>}
       {loading && <div style={{ color: COLORS.gray, fontSize: "10px" }}>Loading saved experiences…</div>}
-      {!loading && displayed.length === 0 && <div style={{ color: COLORS.gray, fontSize: "10px" }}>No stored experiences match this view yet. Start a REAL DQN battle to record outcomes.</div>}
+      {!loading && summary && displayed.length === 0 && <div style={{ color: COLORS.gray, fontSize: "10px" }}>No stored experiences match this view yet. Start a REAL DQN battle to record outcomes.</div>}
       <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
         {displayed.map(entry => (
           <article key={entry.id} style={{ border: `1px solid ${COLORS.border}`, padding: "10px", borderLeft: `3px solid ${entry.outcome === "failure" ? COLORS.red : entry.outcome === "success" ? COLORS.green : COLORS.gray}` }}>
