@@ -119,9 +119,20 @@ def train_marl(
             raise ValueError("seed must be a non-negative integer or None")
         _seed_everything(seed)
 
+    context = f"{n_attackers}v{n_defenders}"
+    model_dir = PROJECT_ROOT / "models"
+    attacker_checkpoint = model_dir / f"marl_{context}_attacker.pt"
+    defender_checkpoint = model_dir / f"marl_{context}_defender.pt"
+    if resume:
+        missing = [str(path) for path in (attacker_checkpoint, defender_checkpoint) if not path.is_file()]
+        if missing:
+            raise FileNotFoundError(
+                f"Cannot resume {context}: both attacker and defender checkpoints are required; "
+                f"missing: {', '.join(missing)}. Start a fresh run with resume=False."
+            )
+
     owns_memory = memory is None
     memory = memory or ExperienceMemory()
-    context = f"{n_attackers}v{n_defenders}"
     env = NetworkEnvironment(
         n_attackers=n_attackers, n_defenders=n_defenders, seed=seed, max_steps=50
     )
@@ -150,30 +161,41 @@ def train_marl(
         if att_restored or def_restored:
             print(f"Restored replay: attacker={att_restored}, defender={def_restored}")
 
-    model_dir = PROJECT_ROOT / "models"
-    attacker_checkpoint = model_dir / f"marl_{context}_attacker.pt"
-    defender_checkpoint = model_dir / f"marl_{context}_defender.pt"
-    if resume and attacker_checkpoint.is_file() and defender_checkpoint.is_file():
+    start_episode = 0
+    if resume:
         try:
-            attacker_brain.load(str(attacker_checkpoint))
-            defender_brain.load(str(defender_checkpoint))
-            # Preserve the current training config even if an older optimizer state
-            # stored a mismatched learning-rate value.
+            # Restore the saved global RNG stream once, from the final checkpoint in
+            # the pair; the two checkpoint writes happen sequentially at save time.
+            attacker_brain.load(str(attacker_checkpoint), restore_rng=False)
+            defender_brain.load(str(defender_checkpoint), restore_rng=True)
+            # Keep the trainer's explicit configuration, even for older checkpoints.
             for brain in (attacker_brain, defender_brain):
                 brain.gamma = 0.95
                 brain.learning_rate = 0.0005
                 brain.target_update_freq = 5
                 for group in brain.optimizer.param_groups:
                     group["lr"] = brain.learning_rate
-            print(f"Resumed checkpoints for {context}")
-        except (RuntimeError, KeyError, ValueError, OSError) as exc:
-            print(f"Checkpoint resume failed; continuing from fresh weights: {exc}")
+            if attacker_brain.episode_count != defender_brain.episode_count:
+                raise ValueError(
+                    "attacker/defender checkpoints have mismatched episode counters "
+                    f"({attacker_brain.episode_count} != {defender_brain.episode_count})"
+                )
+            start_episode = attacker_brain.episode_count
+            print(f"Resumed checkpoints for {context} at completed episode {start_episode}")
+        except Exception as exc:
+            if owns_memory:
+                memory.close()
+            raise RuntimeError(
+                f"Resume requested for {context}, but the saved training state could not "
+                "be restored safely; no fresh-weight fallback was performed."
+            ) from exc
 
     metrics = Metrics()
     best_reward = float("-inf")
     print(f"Training for {num_episodes} episodes...")
 
-    for episode in range(1, num_episodes + 1):
+    for episode in range(start_episode + 1, start_episode + num_episodes + 1):
+        local_episode = episode - start_episode
         episode_seed = ((seed + episode - 1) % (2**32 - 1)) if seed is not None else None
         state = env.reset(seed=episode_seed)
         attacker_brain.reset_episode_reward()
@@ -230,7 +252,7 @@ def train_marl(
             steps=step,
         )
 
-        if episode % 100 == 0:
+        if local_episode % 100 == 0:
             recent_wins = metrics.attacker_success[-100:]
             win_rate = sum(recent_wins) / len(recent_wins) * 100
             avg_att_loss = float(np.mean(att_losses)) if att_losses else 0.0
@@ -255,6 +277,11 @@ def train_marl(
 
     if save_models:
         model_dir.mkdir(parents=True, exist_ok=True)
+        # Always leave a resumable latest-state pair, including runs shorter than
+        # the periodic 100-episode checkpoint interval.
+        attacker_brain.save(str(attacker_checkpoint))
+        defender_brain.save(str(defender_checkpoint))
+        # These final artifacts remain the inference candidates consumed by the API.
         attacker_brain.save(str(model_dir / f"final_marl_attacker_{context}.pt"))
         defender_brain.save(str(model_dir / f"final_marl_defender_{context}_defender.pt"))
 
