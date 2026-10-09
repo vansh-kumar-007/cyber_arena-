@@ -94,6 +94,72 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  frontend-safe-audit-repair-probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install current locked dependencies
+        working-directory: frontend
+        run: npm ci --legacy-peer-deps
+      - name: Capture baseline security report
+        working-directory: frontend
+        shell: bash
+        run: |
+          set +e
+          npm audit --json > audit-before.json
+          echo "Before npm audit exit: $?"
+          set -e
+      - name: Apply npm's compatible (non-force) lockfile fixes
+        working-directory: frontend
+        shell: bash
+        run: |
+          set +e
+          npm audit fix --package-lock-only --legacy-peer-deps
+          fix_exit=$?
+          set -e
+          echo "Non-force npm audit fix exit: $fix_exit"
+          echo "No --force option is used; major/breaking upgrades are excluded."
+      - name: Reinstall exact repaired lockfile and verify app
+        working-directory: frontend
+        env:
+          CI: "true"
+        run: |
+          npm ci --legacy-peer-deps
+          npm test -- --watchAll=false
+          npm run build
+      - name: Capture post-fix security report and summary
+        working-directory: frontend
+        shell: bash
+        run: |
+          set +e
+          npm audit --json > audit-after.json
+          audit_exit=$?
+          set -e
+          node - <<'NODE'
+          const fs = require("fs");
+          for (const filename of ["audit-before.json", "audit-after.json"]) {
+            const report = JSON.parse(fs.readFileSync(filename, "utf8"));
+            console.log(filename, JSON.stringify(report.metadata?.vulnerabilities || {}));
+          }
+          NODE
+          echo "After npm audit exit: $audit_exit (remaining advisories are reported, not hidden)"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: safe-npm-audit-repair-probe
+          path: |
+            frontend/package.json
+            frontend/package-lock.json
+            frontend/audit-before.json
+            frontend/audit-after.json
+          if-no-files-found: error
+          retention-days: 7
+
   ml-training-smoke:
     runs-on: ubuntu-latest
     steps:
