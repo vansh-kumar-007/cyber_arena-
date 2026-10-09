@@ -1,136 +1,160 @@
-# api/simulation.py
-# This file wraps our RL environment and DQN agents
-# so FastAPI can expose them as API endpoints.
+"""Simulation orchestration for the FastAPI service.
 
-import sys
-import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+API gameplay is inference-only by default. Outcomes are persisted as auditable
+episodic memories; DQN policy updates remain part of the explicit training
+pipeline so public gameplay traffic cannot silently rewrite deployed weights.
+"""
+from __future__ import annotations
 
-import numpy as np
-from env.network_env import NetworkEnvironment
+import logging
+from pathlib import Path
+from typing import Any
+
+import torch
+
 from agents.dqn_attacker import DQNAttacker
 from agents.dqn_defender import DQNDefender
 from configs.network_config import ATTACK_TYPES, DEFENSE_TYPES
+from env.network_env import NetworkEnvironment
+from utils.experience_memory import ExperienceMemory
+
+logger = logging.getLogger(__name__)
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
 
 class SimulationManager:
-    def __init__(self):
-        self.env = NetworkEnvironment()
+    def __init__(
+        self,
+        *,
+        memory: ExperienceMemory | None = None,
+        model_dir: str | Path | None = None,
+        seed: int | None = None,
+    ) -> None:
+        self.env = NetworkEnvironment(seed=seed)
         sample_state = self.env.reset()
         self.state_size = len(sample_state)
-
-        # Initialize agents
         self.attacker = DQNAttacker(state_size=self.state_size)
         self.defender = DQNDefender(state_size=self.state_size)
-
-        # Load trained models if they exist
-        self._load_models()
-
-        # Set to exploitation mode (no random actions)
-        self.attacker.epsilon = 0.05
-        self.defender.epsilon = 0.05
-
-        # Current state
+        self.memory = memory or ExperienceMemory()
+        self.model_dir = Path(model_dir) if model_dir else PROJECT_ROOT / "models"
+        self.models_loaded = self._load_models()
+        # Inference-only policy; an explicit training run controls exploration.
+        self.attacker.epsilon = 0.0
+        self.defender.epsilon = 0.0
         self.current_state = self.env.reset()
         self.episode_count = 0
         self.is_done = False
+        self.memory_write_errors = 0
 
-    def _load_models(self):
-        """Try loading models in order of preference"""
-        model_options = [
-            ("models/final_marl_attacker_1v1.pt", "models/final_marl_defender_1v1_defender.pt"),
-            ("models/best_attacker.pt", "models/best_defender.pt"),
-            ("models/final_attacker.pt", "models/final_defender.pt"),
-        ]
+    def _load_models(self) -> bool:
+        """Load the first complete and architecture-compatible checkpoint pair."""
+        model_options = (
+            ("final_marl_attacker_1v1.pt", "final_marl_defender_1v1_defender.pt"),
+            ("best_attacker.pt", "best_defender.pt"),
+            ("final_attacker.pt", "final_defender.pt"),
+        )
+        for attacker_name, defender_name in model_options:
+            attacker_path = self.model_dir / attacker_name
+            defender_path = self.model_dir / defender_name
+            if not attacker_path.is_file() or not defender_path.is_file():
+                continue
+            try:
+                self.attacker.load(str(attacker_path))
+                self.defender.load(str(defender_path))
+                logger.info("Loaded compatible model pair: %s / %s", attacker_path.name, defender_path.name)
+                return True
+            except (RuntimeError, KeyError, ValueError, OSError) as exc:
+                logger.warning("Skipping incompatible checkpoint pair %s/%s: %s",
+                               attacker_path.name, defender_path.name, exc)
+        logger.warning("No compatible trained model pair found; API uses untrained weights")
+        return False
 
-        for att_path, def_path in model_options:
-            if os.path.exists(att_path) and os.path.exists(def_path):
-                try:
-                    self.attacker.load(att_path)
-                    self.defender.load(def_path)
-                    print(f"✅ Loaded models: {att_path}")
-                    return
-                except RuntimeError:
-                    print(f"⚠️ Size mismatch for {att_path}, trying next...")
-                    continue
-
-        print("⚠️ No compatible models found — using fresh weights")
-        print("   API will still work, agents start untrained")
-
-    def reset(self):
-        """Reset environment for new episode"""
-        self.current_state = self.env.reset()
+    def reset(self, *, seed: int | None = None) -> dict[str, Any]:
+        """Start a new episode."""
+        self.current_state = self.env.reset(seed=seed)
         self.is_done = False
         self.episode_count += 1
         return self._get_full_state()
 
-    def step(self):
-        """Run one step of the simulation"""
+    @staticmethod
+    def _outcome(reward: float) -> str:
+        if reward > 0:
+            return "success"
+        if reward < 0:
+            return "failure"
+        return "neutral"
+
+    def _record_experience(
+        self, *, agent: str, task: str, state: tuple[float, ...],
+        actions: list[dict[str, Any]], reward: float, done: bool, step: int,
+    ) -> None:
+        action_names = [a["name"] for a in actions]
+        outcome = self._outcome(float(reward))
+        lesson = (
+            f"Observed {agent} action(s) {', '.join(action_names)} with "
+            f"team reward {float(reward):.3f} at step {step}. "
+            "This is an observed outcome, not proof that the action caused it."
+        )
+        try:
+            self.memory.record(
+                agent=agent,
+                task=task,
+                state_summary={"state_vector": list(state), "step": step},
+                action={"actions": actions},
+                outcome=outcome,
+                reward=float(reward),
+                lesson=lesson,
+                tags=[agent, *action_names, outcome],
+                metadata={"episode": self.episode_count, "step": step, "terminal": done},
+            )
+        except Exception:
+            self.memory_write_errors += 1
+            logger.exception("Could not persist %s experience at episode=%s step=%s",
+                             agent, self.episode_count, step)
+
+    def step(self) -> dict[str, Any]:
+        """Run one inference step and append an auditable result to episodic memory."""
         if self.is_done:
             return self._get_full_state()
 
         state = self.current_state
-
-        # Get actions from DQN agents
-        # Environment expects lists (one action per agent)
-        n_att = self.env.n_attackers
-        n_def = self.env.n_defenders
-
-        att_actions = [self.attacker.choose_action(state) for _ in range(n_att)]
-        def_actions = [self.defender.choose_action(state) for _ in range(n_def)]
-
-        # Use first action for logging/visualization
-        att_action = att_actions[0]
-        def_action = def_actions[0]
-
-        # Get Q-values for visualization
-        import torch
-        state_tensor = torch.FloatTensor(state).unsqueeze(0)
-        with torch.no_grad():
-            att_q_values = self.attacker.online_net(state_tensor).numpy()[0].tolist()
-            def_q_values = self.defender.online_net(state_tensor).numpy()[0].tolist()
-
-        # Step environment
-        next_state, att_reward, def_reward, done = self.env.step(
-            att_actions, def_actions
+        step_number = self.env.current_step + 1
+        # Retrieve evidence for the explanation panel. These records are displayed
+        # as precedents; they do not alter the neural policy's action selection.
+        precedents = self.memory.retrieve(
+            f"attacker defender step {step_number}", limit=3
         )
+        attacker_actions = [self.attacker.choose_action(state) for _ in range(self.env.n_attackers)]
+        defender_actions = [self.defender.choose_action(state) for _ in range(self.env.n_defenders)]
+        att_action = attacker_actions[0]
+        def_action = defender_actions[0]
 
-        # Learn from this step
-        # Store experience but don't learn during API gameplay
-        # Learning happens during training (train_dqn.py)
-        # This prevents gradient computation conflicts
-        self.attacker.remember(state, att_action, att_reward, next_state, float(done))
-        self.defender.remember(state, def_action, def_reward, next_state, float(done))
+        state_tensor = torch.as_tensor(state, dtype=torch.float32).unsqueeze(0)
+        with torch.inference_mode():
+            att_q_values = self.attacker.online_net(state_tensor).cpu().numpy()[0].tolist()
+            def_q_values = self.defender.online_net(state_tensor).cpu().numpy()[0].tolist()
+
+        next_state, att_reward, def_reward, done = self.env.step(attacker_actions, defender_actions)
+        info = self.env.get_info()
+        att_actions_named = [
+            {"id": action, "name": ATTACK_TYPES[action]["name"]} for action in attacker_actions
+        ]
+        def_actions_named = [
+            {"id": action, "name": DEFENSE_TYPES[action]["name"]} for action in defender_actions
+        ]
+        self._record_experience(
+            agent="attacker", task="simulated network attack decision", state=state,
+            actions=att_actions_named, reward=float(att_reward), done=done, step=step_number,
+        )
+        self._record_experience(
+            agent="defender", task="simulated network defense decision", state=state,
+            actions=def_actions_named, reward=float(def_reward), done=done, step=step_number,
+        )
 
         self.current_state = next_state
         self.is_done = done
-
-        if done:
-            self.attacker.decay_epsilon()
-            self.defender.decay_epsilon()
-            if self.episode_count % 10 == 0:
-                self.attacker.update_target_network()
-                self.defender.update_target_network()
-
-        info = self.env.get_info()
-
         return {
-            "state": {
-                "compromised": info["compromised"],
-                "attacker_position": info["attacker_position"],
-                "detection_score": info["detection_score"],
-                "blocked_nodes": info["blocked_nodes"],
-                "patched_nodes": info["patched_nodes"],
-                "honeypots": info["honeypots"],
-                "isolated_nodes": info["isolated_nodes"],
-                "ids_active": info["ids_active"],
-                "attacker_won": info["attacker_won"],
-                "attacker_score": info["attacker_score"],    # make sure this is here
-                "defender_score": info["defender_score"],    # make sure this is here
-                "battle_log": info["battle_log"],
-                "last_attack": info["last_attack"],
-                "last_defense": info["last_defense"],
-                "attacker_positions": info["attacker_positions"],
-            },
+            "state": self._serialize_state(info),
             "att_action": att_action,
             "def_action": def_action,
             "att_reward": float(att_reward),
@@ -142,19 +166,60 @@ class SimulationManager:
             "episode": self.episode_count,
             "att_epsilon": round(self.attacker.epsilon, 4),
             "def_epsilon": round(self.defender.epsilon, 4),
+            "decision_context": {
+                "explanation": "Actions are selected by the currently loaded DQN policy. Similar stored episodes are shown as context only; they do not directly override the policy.",
+                "precedents": precedents,
+            },
         }
 
-    def get_network_weights(self):
-        """Get neural network weights for visualization"""
+    @staticmethod
+    def _serialize_state(info: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "compromised": info["compromised"],
+            "attacker_position": info["attacker_position"],
+            "detection_score": info["detection_score"],
+            "blocked_nodes": info["blocked_nodes"],
+            "patched_nodes": info["patched_nodes"],
+            "honeypots": info["honeypots"],
+            "isolated_nodes": info["isolated_nodes"],
+            "ids_active": info["ids_active"],
+            "attacker_won": info["attacker_won"],
+            "attacker_score": info["attacker_score"],
+            "defender_score": info["defender_score"],
+            "battle_log": info["battle_log"],
+            "last_attack": info["last_attack"],
+            "last_defense": info["last_defense"],
+            "attacker_positions": info["attacker_positions"],
+            "defender_positions": info["defender_positions"],
+            "detection_count": info["detection_count"],
+            "n_attackers": info["n_attackers"],
+            "n_defenders": info["n_defenders"],
+        }
+
+    def get_network_weights(self) -> dict[str, Any]:
         return {
             "attacker": self.attacker.get_network_weights(),
             "defender": self.defender.get_network_weights(),
         }
 
-    def _get_full_state(self):
-        info = self.env.get_info()
+    def status(self) -> dict[str, Any]:
         return {
-            "state": info,
+            "episode": self.episode_count,
+            "step": self.env.current_step,
+            "is_done": self.is_done,
+            "att_epsilon": round(self.attacker.epsilon, 4),
+            "def_epsilon": round(self.defender.epsilon, 4),
+            "att_memory": len(self.attacker.memory),
+            "def_memory": len(self.defender.memory),
+            "models_loaded": self.models_loaded,
+            "state_size": self.state_size,
+            "experience_memory": self.memory.summary(),
+            "memory_write_errors": self.memory_write_errors,
+        }
+
+    def _get_full_state(self) -> dict[str, Any]:
+        return {
+            "state": self._serialize_state(self.env.get_info()),
             "done": self.is_done,
             "step": self.env.current_step,
             "episode": self.episode_count,
