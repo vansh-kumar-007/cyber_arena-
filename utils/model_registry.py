@@ -250,6 +250,8 @@ class ModelRegistry:
             if not valid:
                 errors.append(f"{key} must contain finite [lower_95pct, upper_95pct] values")
             elif key in {"attacker_crossplay_win_rate_delta_ci95", "defender_crossplay_success_rate_delta_ci95"}:
+                if any(float(part) < -1.0 or float(part) > 1.0 for part in value):
+                    errors.append(f"{key} values must be within [-1.0, 1.0]")
                 if float(value[0]) <= 0:
                     errors.append(f"{key} lower 95% confidence bound must be > 0")
             elif key in {"attacker_mean_reward_delta_ci95", "defender_mean_reward_delta_ci95"}:
@@ -333,7 +335,9 @@ class ModelRegistry:
             self._event("evaluation_recorded", model_id, model["decision_reason"])
             return model
 
-    def _validated_model(self, registry: dict[str, Any], model_id: str) -> dict[str, Any]:
+    def _validated_model(
+        self, registry: dict[str, Any], model_id: str, *, require_current_baseline: bool = False
+    ) -> dict[str, Any]:
         model = registry["models"].get(model_id)
         if model is None:
             raise KeyError(model_id)
@@ -343,7 +347,10 @@ class ModelRegistry:
         if evaluation.get("compatible") is not True or evaluation.get("passed") is not True:
             raise ValueError("model does not have a passing compatible evaluation")
         acceptance_errors = self._evaluation_acceptance_errors(
-            registry, model, evaluation.get("metrics") or {}, check_current_baseline=False
+            registry,
+            model,
+            evaluation.get("metrics") or {},
+            check_current_baseline=require_current_baseline,
         )
         if acceptance_errors:
             raise ValueError("evaluation does not meet promotion acceptance criteria: " + "; ".join(acceptance_errors))
@@ -364,7 +371,9 @@ class ModelRegistry:
             raise ValueError("promotion reason is required")
         with _LOCK:
             registry = self._read()
-            model = self._validated_model(registry, model_id)
+            # Re-evaluation must still target the policy that is active now. A
+            # different candidate may have been promoted since these metrics were recorded.
+            model = self._validated_model(registry, model_id, require_current_baseline=True)
             previous = self.active_model()
             if previous and previous["model_id"] == model_id:
                 return previous
