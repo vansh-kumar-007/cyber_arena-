@@ -121,9 +121,6 @@ class SimulationManager:
         step_number = self.env.current_step + 1
         # Retrieve evidence for the explanation panel. These records are displayed
         # as precedents; they do not alter the neural policy's action selection.
-        precedents = self.memory.retrieve(
-            f"attacker defender step {step_number}", limit=3
-        )
         attacker_actions = [self.attacker.choose_action(state) for _ in range(self.env.n_attackers)]
         defender_actions = [self.defender.choose_action(state) for _ in range(self.env.n_defenders)]
         att_action = attacker_actions[0]
@@ -142,6 +139,18 @@ class SimulationManager:
         def_actions_named = [
             {"id": action, "name": DEFENSE_TYPES[action]["name"]} for action in defender_actions
         ]
+        precedent_query = " ".join(
+            ["attacker", *(action["name"] for action in att_actions_named),
+             "defender", *(action["name"] for action in def_actions_named)]
+        )
+        precedents = self.memory.retrieve(precedent_query, limit=3)
+
+        def top_actions(values: list[float], action_map: dict[int, dict[str, Any]]) -> list[dict[str, Any]]:
+            ranked = sorted(enumerate(values), key=lambda pair: pair[1], reverse=True)[:3]
+            return [
+                {"id": action_id, "name": action_map[action_id]["name"], "q_value": float(value)}
+                for action_id, value in ranked
+            ]
         self._record_experience(
             agent="attacker", task="simulated network attack decision", state=state,
             actions=att_actions_named, reward=float(att_reward), done=done, step=step_number,
@@ -167,7 +176,9 @@ class SimulationManager:
             "att_epsilon": round(self.attacker.epsilon, 4),
             "def_epsilon": round(self.defender.epsilon, 4),
             "decision_context": {
-                "explanation": "Actions are selected by the currently loaded DQN policy. Similar stored episodes are shown as context only; they do not directly override the policy.",
+                "explanation": "The DQN selected actions using its current Q-value estimates for the observed state. Q-values estimate relative long-term return; they are not probabilities or guarantees. Stored episodes are historical context only and do not directly override the deployed policy.",
+                "attacker_top_actions": top_actions(att_q_values, ATTACK_TYPES),
+                "defender_top_actions": top_actions(def_q_values, DEFENSE_TYPES),
                 "precedents": precedents,
             },
         }
