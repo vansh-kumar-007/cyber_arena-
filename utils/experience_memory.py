@@ -25,7 +25,9 @@ class ExperienceMemory:
     """SQLite-backed store for task episodes, failures, and learned lessons."""
 
     def __init__(self, path: str | os.PathLike[str] | None = None) -> None:
-        configured = path or os.environ.get("CYBERARENA_MEMORY_DB", "data/agent_memory.sqlite3")
+        configured = path if path is not None else os.environ.get("CYBERARENA_MEMORY_DB")
+        if configured is None or str(configured).strip() == "":
+            configured = Path(__file__).resolve().parents[1] / "data" / "agent_memory.sqlite3"
         self.path = ":memory:" if str(configured) == ":memory:" else str(Path(configured).expanduser())
         if self.path != ":memory:":
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
