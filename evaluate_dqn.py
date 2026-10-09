@@ -64,6 +64,7 @@ def evaluate_pair(
     steps_list: list[int] = []
     detections_list: list[int] = []
     wins = 0
+    wins_by_episode: list[int] = []
     for index in range(episodes):
         episode_seed = (seed + index) % (2**32 - 1)
         env = NetworkEnvironment(n_attackers=1, n_defenders=1, seed=episode_seed, max_steps=50)
@@ -83,7 +84,9 @@ def evaluate_pair(
         rewards_def.append(total_def)
         steps_list.append(step_count)
         detections_list.append(int(info["detection_count"]))
-        wins += int(bool(info["attacker_won"]))
+        episode_won = int(bool(info["attacker_won"]))
+        wins += episode_won
+        wins_by_episode.append(episode_won)
 
     return {
         "policy": name,
@@ -94,6 +97,13 @@ def evaluate_pair(
         "episode_seeds": [((seed + i) % (2**32 - 1)) for i in range(episodes)],
         "attacker_win_rate": wins / episodes,
         "attacker_win_rate_95pct_wilson": wilson_interval(wins, episodes),
+        # Retain seed-aligned outcomes so the caller can perform paired statistical
+        # comparisons instead of relying only on separate marginal win-rate intervals.
+        "attacker_wins_by_episode": wins_by_episode,
+        "attacker_rewards_by_episode": rewards_att,
+        "defender_rewards_by_episode": rewards_def,
+        "episode_steps_by_episode": steps_list,
+        "detections_by_episode": detections_list,
         "mean_attacker_reward": mean(rewards_att),
         "mean_defender_reward": mean(rewards_def),
         "median_episode_steps": median(steps_list),
@@ -109,6 +119,10 @@ def main() -> int:
     parser.add_argument("--candidate-defender", required=True)
     parser.add_argument("--episodes", type=int, default=100)
     parser.add_argument("--seed", type=int, default=1234)
+    parser.add_argument(
+        "--eval-seed", type=int, default=None,
+        help="Optional explicit evaluation seed so multiple training runs share one held-out suite",
+    )
     parser.add_argument("--output", default=None, help="Optional JSON results path")
     args = parser.parse_args()
 
@@ -116,6 +130,8 @@ def main() -> int:
         parser.error("--episodes must be between 1 and 10000")
     if args.seed < 0:
         parser.error("--seed must be non-negative")
+    if args.eval_seed is not None and args.eval_seed < 0:
+        parser.error("--eval-seed must be non-negative")
     paths = [
         args.baseline_attacker, args.baseline_defender,
         args.candidate_attacker, args.candidate_defender,
@@ -134,14 +150,14 @@ def main() -> int:
         attacker_path=args.baseline_attacker,
         defender_path=args.baseline_defender,
         episodes=args.episodes,
-        seed=args.seed,
+        seed=args.eval_seed if args.eval_seed is not None else args.seed,
     )
     candidate = evaluate_pair(
         name="candidate",
         attacker_path=args.candidate_attacker,
         defender_path=args.candidate_defender,
         episodes=args.episodes,
-        seed=args.seed,
+        seed=args.eval_seed if args.eval_seed is not None else args.seed,
     )
     report = {
         "evaluation": "fixed-seed paired checkpoint comparison",

@@ -1,0 +1,67 @@
+name: Reproducible policy evaluation
+
+on:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "agents/**"
+      - "configs/**"
+      - "env/**"
+      - "evaluate_dqn.py"
+      - "scripts/run_policy_evaluation.py"
+      - "scripts/summarize_policy_evaluation_suite.py"
+      - "train_dqn.py"
+      - "utils/**"
+      - ".github/workflows/policy-evaluation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate-policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install numerical runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Run three independent training seeds on one fixed holdout suite
+        env:
+          OMP_NUM_THREADS: "1"
+          MKL_NUM_THREADS: "1"
+          PYTHONHASHSEED: "20261010"
+        run: |
+          for seed in 20261010 20261011 20261012; do
+            python scripts/run_policy_evaluation.py \
+              --seed "$seed" \
+              --eval-seed 20361010 \
+              --train-episodes 100 \
+              --eval-episodes 100 \
+              --output "artifacts/policy-evaluation-$seed.json" \
+              --work-dir "artifacts/policy-evaluation-work-$seed"
+          done
+          python scripts/summarize_policy_evaluation_suite.py \
+            --reports \
+              artifacts/policy-evaluation-20261010.json \
+              artifacts/policy-evaluation-20261011.json \
+              artifacts/policy-evaluation-20261012.json \
+            --output artifacts/policy-evaluation-suite.json
+      - name: Upload evaluation report and reproducibility artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cyberarena-policy-evaluation
+          path: |
+            artifacts/policy-evaluation-suite.json
+            artifacts/policy-evaluation-*.json
+            artifacts/policy-evaluation-work-*/**/*.pt
+            artifacts/policy-evaluation-work-*/agent-memory.sqlite3*
+          if-no-files-found: warn
+          retention-days: 30
