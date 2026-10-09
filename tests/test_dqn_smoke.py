@@ -10,7 +10,7 @@ from agents.dqn_attacker import DQNAttacker
 from utils.experience_memory import ExperienceMemory
 
 
-def test_one_episode_trains_and_persists_replay_and_checkpoints(tmp_path, monkeypatch):
+def test_short_run_trains_and_persists_replay_and_checkpoints(tmp_path, monkeypatch):
     monkeypatch.setattr(train_dqn, "PROJECT_ROOT", tmp_path)
     memory = ExperienceMemory(tmp_path / "runtime" / "memory.sqlite3")
     metrics, attacker, defender = train_dqn.train_marl(
@@ -23,8 +23,10 @@ def test_one_episode_trains_and_persists_replay_and_checkpoints(tmp_path, monkey
         restore_replay=True,
     )
 
-    assert len(metrics.attacker_rewards) == 1
-    assert len(metrics.defender_rewards) == 1
+    assert len(metrics.attacker_rewards) == 10
+    assert len(metrics.defender_rewards) == 10
+    assert attacker.losses, "attacker DQN did not perform a gradient update"
+    assert defender.losses, "defender DQN did not perform a gradient update"
     assert len(attacker.memory) >= attacker.batch_size
     assert len(defender.memory) >= defender.batch_size
     summary = memory.summary()
