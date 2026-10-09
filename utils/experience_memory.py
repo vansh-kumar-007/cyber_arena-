@@ -17,6 +17,9 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
+SCHEMA_VERSION = 1
+
+
 def _json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
@@ -30,10 +33,13 @@ class ExperienceMemory:
         *,
         unlinked_limit: int | None = None,
     ) -> None:
-        configured = path if path is not None else os.environ.get("CYBERARENA_MEMORY_DB")
+        environment_path = os.environ.get("CYBERARENA_MEMORY_DB", "").strip()
+        configured = path if path is not None else environment_path
+        self.path_explicitly_configured = path is not None or bool(environment_path)
         if configured is None or str(configured).strip() == "":
             configured = Path(__file__).resolve().parents[1] / "data" / "agent_memory.sqlite3"
         self.path = ":memory:" if str(configured) == ":memory:" else str(Path(configured).expanduser())
+        self.file_backed = self.path != ":memory:"
         configured_limit = unlinked_limit
         if configured_limit is None:
             configured_limit = int(os.environ.get("CYBERARENA_UNLINKED_EXPERIENCE_LIMIT", "20000"))
@@ -48,8 +54,17 @@ class ExperienceMemory:
         self._connection = sqlite3.connect(self.path, check_same_thread=False, timeout=10)
         self._connection.row_factory = sqlite3.Row
         with self._lock:
+            current_schema_version = int(self._connection.execute("PRAGMA user_version").fetchone()[0])
+            if current_schema_version > SCHEMA_VERSION:
+                self._connection.close()
+                raise RuntimeError(
+                    f"memory database schema version {current_schema_version} is newer than "
+                    f"supported version {SCHEMA_VERSION}"
+                )
             self._connection.execute("PRAGMA foreign_keys = ON")
+            self._connection.execute("PRAGMA busy_timeout = 10000")
             self._connection.execute("PRAGMA journal_mode = WAL")
+            self._connection.execute("PRAGMA synchronous = FULL")
             self._connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS experiences (
@@ -92,7 +107,22 @@ class ExperienceMemory:
                     ON replay_transitions(experience_id);
                 """
             )
+            # Apply additive migrations for databases created before the current schema.
+            # Existing experiences are retained and receive an active lesson status.
+            experience_columns = {
+                row["name"] for row in self._connection.execute("PRAGMA table_info(experiences)")
+            }
+            if "lesson_status" not in experience_columns:
+                self._connection.execute(
+                    "ALTER TABLE experiences ADD COLUMN lesson_status TEXT NOT NULL "
+                    "DEFAULT 'active' CHECK (lesson_status IN ('active', 'deprecated'))"
+                )
+            self._connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             self._connection.commit()
+            integrity = self._connection.execute("PRAGMA quick_check").fetchone()[0]
+            if integrity != "ok":
+                self._connection.close()
+                raise RuntimeError(f"memory database integrity check failed: {integrity}")
             # Trim an existing database at startup. Replay-linked episodes are retained.
             with self._connection:
                 self._prune_unlinked_locked()
@@ -128,6 +158,20 @@ class ExperienceMemory:
                 (exclude_id, max(0, self.unlinked_record_limit - 1)),
             )
         return cursor.rowcount
+
+    def storage_status(self) -> dict[str, Any]:
+        """Expose storage facts without returning filesystem paths or record contents."""
+        return {
+            "backend": "sqlite",
+            "file_backed": self.file_backed,
+            "path_explicitly_configured": self.path_explicitly_configured,
+            "schema_version": SCHEMA_VERSION,
+            "durability_note": (
+                "File-backed SQLite: durability still depends on the host's mount configuration."
+                if self.file_backed
+                else "In-memory SQLite: records do not survive process restart."
+            ),
+        }
 
     def close(self) -> None:
         with self._lock:

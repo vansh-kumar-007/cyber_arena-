@@ -1,9 +1,13 @@
 """Small CPU-only integration smoke test for training, replay, and checkpoints."""
 from __future__ import annotations
 
+import random
+
 import pytest
 
 torch = pytest.importorskip("torch")
+
+import numpy as np
 
 import train_dqn
 from agents.dqn_attacker import DQNAttacker
@@ -40,6 +44,9 @@ def test_short_run_trains_and_persists_replay_and_checkpoints(tmp_path, monkeypa
     defender_path = tmp_path / "models" / "final_marl_defender_2v2_defender.pt"
     assert attacker_path.is_file()
     assert defender_path.is_file()
+    # Short runs also write the separate latest-state pair required by resume=True.
+    assert (tmp_path / "models" / "marl_2v2_attacker.pt").is_file()
+    assert (tmp_path / "models" / "marl_2v2_defender.pt").is_file()
 
     # The API must load the requested scenario's checkpoint pair.
     manager = SimulationManager(memory=memory, model_dir=tmp_path / "models", seed=2026)
@@ -58,4 +65,91 @@ def test_short_run_trains_and_persists_replay_and_checkpoints(tmp_path, monkeypa
     )
     assert replayed == summary["replay_transitions_by_agent"]["attacker"]
     assert len(restored.memory) == replayed
+    memory.close()
+
+
+def test_checkpoint_restores_safe_rng_state_and_replay_schedule(tmp_path):
+    import torch
+
+    random.seed(19)
+    np.random.seed(19)
+    torch.manual_seed(19)
+    original = DQNAttacker(state_size=37)
+    original.epsilon = 0.23
+    original.episode_count = 17
+    original.memory.beta = 0.83
+    checkpoint_path = tmp_path / "checkpoint.pt"
+    original.save(str(checkpoint_path))
+
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    saved_rng = checkpoint["rng_state"]
+    python_saved = (
+        saved_rng["python"]["version"],
+        tuple(saved_rng["python"]["state"]),
+        saved_rng["python"]["gauss"],
+    )
+    numpy_saved = saved_rng["numpy"]
+
+    random.seed(7)
+    np.random.seed(7)
+    torch.manual_seed(7)
+    restored = DQNAttacker(state_size=37)
+    restored.load(str(checkpoint_path), restore_rng=True)
+
+    assert random.getstate() == python_saved
+    numpy_actual = np.random.get_state()
+    assert numpy_actual[0] == numpy_saved["bit_generator"]
+    np.testing.assert_array_equal(
+        numpy_actual[1], np.asarray(numpy_saved["state"], dtype=np.uint32)
+    )
+    assert numpy_actual[2] == numpy_saved["position"]
+    assert numpy_actual[3] == numpy_saved["has_gauss"]
+    assert numpy_actual[4] == numpy_saved["cached_gaussian"]
+    assert torch.equal(torch.get_rng_state(), saved_rng["torch_cpu"])
+    assert restored.epsilon == pytest.approx(0.23)
+    assert restored.episode_count == 17
+    assert restored.memory.beta == pytest.approx(0.83)
+
+
+def test_resume_fails_closed_when_checkpoint_pair_is_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(train_dqn, "PROJECT_ROOT", tmp_path)
+    memory = ExperienceMemory(tmp_path / "memory.sqlite3")
+
+    with pytest.raises(FileNotFoundError, match="both attacker and defender checkpoints"):
+        train_dqn.train_marl(
+            n_attackers=1,
+            n_defenders=1,
+            num_episodes=1,
+            save_models=False,
+            seed=19,
+            memory=memory,
+            resume=True,
+        )
+
+    model_dir = tmp_path / "models"
+    model_dir.mkdir(parents=True)
+    DQNAttacker(state_size=37).save(str(model_dir / "marl_1v1_attacker.pt"))
+    with pytest.raises(FileNotFoundError, match="missing"):
+        train_dqn.train_marl(
+            n_attackers=1,
+            n_defenders=1,
+            num_episodes=1,
+            save_models=False,
+            seed=19,
+            memory=memory,
+            resume=True,
+        )
+
+    # A corrupt partner must raise rather than silently continuing from random weights.
+    (model_dir / "marl_1v1_defender.pt").write_text("not a PyTorch checkpoint")
+    with pytest.raises(RuntimeError, match="no fresh-weight fallback"):
+        train_dqn.train_marl(
+            n_attackers=1,
+            n_defenders=1,
+            num_episodes=1,
+            save_models=False,
+            seed=19,
+            memory=memory,
+            resume=True,
+        )
     memory.close()

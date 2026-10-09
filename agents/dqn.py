@@ -252,14 +252,67 @@ class DQNAgent:
                 })
         return weights
 
+    @staticmethod
+    def _capture_rng_state():
+        """Capture RNG streams using weights-only-safe primitive containers and tensors."""
+        python_version, python_state, python_gauss = random.getstate()
+        numpy_name, numpy_state, numpy_pos, numpy_has_gauss, numpy_cached = np.random.get_state()
+        return {
+            "python": {
+                "version": int(python_version),
+                "state": [int(value) for value in python_state],
+                "gauss": python_gauss,
+            },
+            "numpy": {
+                "bit_generator": str(numpy_name),
+                "state": numpy_state.astype(np.uint32).tolist(),
+                "position": int(numpy_pos),
+                "has_gauss": int(numpy_has_gauss),
+                "cached_gaussian": float(numpy_cached),
+            },
+            "torch_cpu": torch.get_rng_state(),
+            "torch_cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else [],
+        }
+
+    @staticmethod
+    def _restore_rng_state(rng_state):
+        """Restore saved RNG streams; old checkpoints without RNG data remain loadable."""
+        python_state = rng_state.get("python")
+        if python_state:
+            random.setstate((
+                int(python_state["version"]),
+                tuple(int(value) for value in python_state["state"]),
+                python_state.get("gauss"),
+            ))
+
+        numpy_state = rng_state.get("numpy")
+        if numpy_state:
+            np.random.set_state((
+                str(numpy_state["bit_generator"]),
+                np.asarray(numpy_state["state"], dtype=np.uint32),
+                int(numpy_state["position"]),
+                int(numpy_state["has_gauss"]),
+                float(numpy_state["cached_gaussian"]),
+            ))
+
+        cpu_state = rng_state.get("torch_cpu")
+        if isinstance(cpu_state, torch.Tensor):
+            torch.set_rng_state(cpu_state.detach().cpu())
+
+        cuda_states = rng_state.get("torch_cuda", [])
+        if torch.cuda.is_available() and cuda_states:
+            if len(cuda_states) == torch.cuda.device_count():
+                torch.cuda.set_rng_state_all([state.detach().cpu() for state in cuda_states])
+
     def save(self, path):
-        """Save policy, target network, optimizer, and training counters."""
+        """Atomically save policy, optimizer, replay metadata, counters, and RNG state."""
         import os
+
         directory = os.path.dirname(os.path.abspath(path))
         os.makedirs(directory, exist_ok=True)
         temporary_path = f"{path}.tmp"
-        torch.save({
-            "checkpoint_version": 2,
+        checkpoint = {
+            "checkpoint_version": 3,
             "state_size": self.state_size,
             "action_size": self.action_size,
             "online_net": self.online_net.state_dict(),
@@ -271,19 +324,40 @@ class DQNAgent:
             "learning_rate": self.learning_rate,
             "batch_size": self.batch_size,
             "target_update_freq": self.target_update_freq,
-        }, temporary_path)
-        os.replace(temporary_path, path)
+            "replay_metadata": {
+                "capacity": self.memory.capacity,
+                "size": len(self.memory),
+                "alpha": self.memory.alpha,
+                "beta": self.memory.beta,
+                "beta_increment": self.memory.beta_increment,
+                # PER priorities are intentionally reconstructed from the durable replay
+                # log when resuming, because SQLite's chronological order does not encode
+                # the ring buffer's internal slot order.
+            },
+            "rng_state": self._capture_rng_state(),
+        }
+        try:
+            torch.save(checkpoint, temporary_path)
+            os.replace(temporary_path, path)
+        finally:
+            if os.path.exists(temporary_path):
+                os.remove(temporary_path)
 
-    def load(self, path):
-        """Load a checkpoint safely and reject incompatible network dimensions."""
+    def load(self, path, *, restore_rng=False):
+        """Safely load a compatible checkpoint, optionally restoring its RNG streams."""
         # weights_only prevents arbitrary Python object deserialization from checkpoints.
         checkpoint = torch.load(path, map_location="cpu", weights_only=True)
         if not isinstance(checkpoint, dict) or "online_net" not in checkpoint or "target_net" not in checkpoint:
             raise ValueError("checkpoint is missing online/target network weights")
+        version = int(checkpoint.get("checkpoint_version", 1))
+        if version > 3:
+            raise ValueError(f"unsupported checkpoint version {version}")
         if checkpoint.get("state_size", self.state_size) != self.state_size:
             raise ValueError("checkpoint state dimension does not match this environment")
         if checkpoint.get("action_size", self.action_size) != self.action_size:
             raise ValueError("checkpoint action dimension does not match this agent")
+
+        # Validate both weight dictionaries before applying either one.
         self.online_net.load_state_dict(checkpoint["online_net"])
         self.target_net.load_state_dict(checkpoint["target_net"])
         if "optimizer" in checkpoint:
@@ -294,3 +368,22 @@ class DQNAgent:
         self.learning_rate = float(checkpoint.get("learning_rate", self.learning_rate))
         self.batch_size = int(checkpoint.get("batch_size", self.batch_size))
         self.target_update_freq = int(checkpoint.get("target_update_freq", self.target_update_freq))
+
+        replay_metadata = checkpoint.get("replay_metadata") or {}
+        # A persisted replay log is restored before load() by the training pipeline.
+        # Restore schedule parameters only when it reconstructed the same buffer size.
+        if (replay_metadata.get("capacity") == self.memory.capacity
+                and replay_metadata.get("size") == len(self.memory)):
+            self.memory.alpha = float(replay_metadata.get("alpha", self.memory.alpha))
+            self.memory.beta = float(replay_metadata.get("beta", self.memory.beta))
+            self.memory.beta_increment = float(
+                replay_metadata.get("beta_increment", self.memory.beta_increment)
+            )
+
+        if restore_rng:
+            rng_state = checkpoint.get("rng_state")
+            if rng_state:
+                try:
+                    self._restore_rng_state(rng_state)
+                except (KeyError, TypeError, ValueError, RuntimeError) as exc:
+                    raise ValueError("checkpoint contains an invalid RNG state") from exc
