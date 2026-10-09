@@ -71,7 +71,7 @@ def _comparison_metrics(
         "evaluation_suite_id": "matched-1v1-cross-play",
         "evaluation_suite_version": "1",
         "holdout_seed_set_sha256": "a" * 64,
-        "training_seed_count": 3,
+        "evaluation_seed_count": 3,
         "paired_episodes": 300,
         # Positive lower 95% confidence bounds are required for both cross-play
         # role metrics; rewards remain recorded with uncertainty for audit.
