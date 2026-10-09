@@ -761,13 +761,15 @@ Supported server environment variables:
 | Variable | Purpose |
 |---|---|
 | `CYBERARENA_CORS_ORIGINS` | Comma-separated allowed browser origins. Defaults to the published Vercel URL and localhost development origins. |
-| `CYBERARENA_MEMORY_DB` | SQLite file path; defaults to `<repo>/data/agent_memory.sqlite3`. |
-| `CYBERARENA_ADMIN_TOKEN` | Server-side token required for lesson edits/deletes/resets. Never commit it or bake it into the frontend bundle. |
+| `CYBERARENA_MEMORY_DB` | SQLite file path; defaults to `<repo>/data/agent_memory.sqlite3`. File-backed does not imply durable hosting. |
+| `CYBERARENA_MODEL_DIR` | Checkpoint and model-registry directory; defaults to `<repo>/models/`. Keep registry pointers and checksum-verified checkpoint pairs together. |
+| `CYBERARENA_TRAINING_OUTPUT_DIR` | Optional default output directory for local checkpoints and experiment reports. Explicit `--output-dir` takes precedence. |
+| `CYBERARENA_ADMIN_TOKEN` | Server-side token required for memory listing/search and lesson edits/deletes/resets. Never commit it or bake it into the frontend bundle. |
 | `CYBERARENA_UNLINKED_EXPERIENCE_LIMIT` | Maximum retained unlinked episode records, default `20000` (valid range `1`–`1000000`); old unlinked records are trimmed at startup and every 1000 writes. Records linked to replay transitions are preserved. |
 | `LOG_LEVEL` | Python log level, default `INFO`. |
 | `PORT` | Backend port, default `8000`. |
 
-For Render or another ephemeral deployment, attach persistent disk storage and point `CYBERARENA_MEMORY_DB` to that mounted disk (for example, `/var/data/agent_memory.sqlite3`). Without persistent mounted storage, SQLite history can disappear during redeploys or instance replacement. Set `CYBERARENA_CORS_ORIGINS` to the exact frontend origin for your deployment. The API's memory mutation endpoints return 503 until an admin token is configured and return 403 for a missing or invalid token. The browser asks for the token when an administrator opens the memory panel; the application does not store it in local storage.
+On the current zero-budget Render Free deployment, local SQLite and runtime registry/checkpoint writes are ephemeral or unverified; no persistence across deploys, restarts, or idle spin-down is promised. Keep SQLite for this single-worker architecture; no paid disk or managed database is required. See [`docs/zero-budget-operations.md`](docs/zero-budget-operations.md) for local memory transfer, reproducible training outputs and free-tier guarantees. The older [`docs/phase3-storage-runbook.md`](docs/phase3-storage-runbook.md) is a future migration path for environments with persistent storage. Set `CYBERARENA_CORS_ORIGINS` to the exact frontend origin. Memory listing/search and mutation require server-side `CYBERARENA_ADMIN_TOKEN`; unset returns HTTP 503 and missing/incorrect tokens return HTTP 403. The browser sends the token in request headers only.
 
 The API has a single shared game state per process. Run one Uvicorn worker when the browser should control a single coherent match; multiple workers would each have their own simulation state. If you expose the service publicly, terminate HTTPS at the hosting platform, configure the admin token as a secret, and keep the frontend and backend origins explicit.
 
@@ -775,6 +777,6 @@ The API has a single shared game state per process. Run one Uvicorn worker when 
 
 GitHub Actions compiles the Python modules, tests environment invariants, replay persistence, API authorization and reset validation, runs a short CPU DQN training/checkpoint/replay smoke test, and tests/builds the React frontend. The training smoke test verifies that gradient updates occur and that scenario-specific checkpoints can be loaded; it is not a convergence benchmark. CI does **not** prove that long DQN training converges or reproduce every historical metric included earlier in this README. The legacy Streamlit dashboard and `main.py` still use the baseline Q-learning path; use `train_dqn.py` for the DQN/MARL training implementation. Evaluation before/after a policy change should use fixed seeds and identical held-out episodes, with rewards, win rate, episode length, and uncertainty reported together.
 
-The current frontend dependency tree also reports 89 npm advisories (3 critical and 71 high in the latest observed CI install output). These have not been auto-upgraded because a forced upgrade could break the Create React App build; review and resolve them in a dedicated dependency migration before treating the public deployment as fully hardened.
+The latest observed frontend dependency audit reports 86 advisories (0 critical, 71 high, 12 moderate, 3 low). These have not been auto-upgraded because a forced upgrade could break the Create React App build; a controlled CRA-to-Vite migration remains outstanding.
 
 This repository models cybersecurity concepts in a closed simulation only. It must not be used to run actions against real networks or infrastructure.

@@ -32,10 +32,22 @@ test("renders the CyberArena game and agent-memory entry point", () => {
   expect(screen.getByRole("button", { name: /AGENT MEMORY & LEARNING/i })).toBeInTheDocument();
 });
 
-test("opens memory panel and displays persisted outcome metrics", async () => {
+test("opens memory panel and loads outcome metrics only with an admin token", async () => {
   render(<App />);
   fireEvent.click(screen.getByRole("button", { name: /AGENT MEMORY & LEARNING/i }));
+
+  expect(screen.getByRole("alert")).toHaveTextContent(/server-configured admin token/i);
+  expect(
+    global.fetch.mock.calls.some(([url]) => String(url).includes("/memory?limit=25")),
+  ).toBe(false);
+
+  fireEvent.change(screen.getByLabelText("Memory admin token"), { target: { value: "test-secret" } });
+  fireEvent.click(screen.getByRole("button", { name: /REFRESH/i }));
+
   expect(await screen.findByText("SUCCESSFUL OUTCOMES")).toBeInTheDocument();
   expect(screen.getByText("50.0%")).toBeInTheDocument();
-  expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("/memory?limit=25"));
+  expect(global.fetch).toHaveBeenCalledWith(
+    expect.stringContaining("/memory?limit=25"),
+    { headers: { "X-Admin-Token": "test-secret" } },
+  );
 });

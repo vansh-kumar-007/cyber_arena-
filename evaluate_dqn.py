@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import time
 from pathlib import Path
 from statistics import mean, median
 from typing import Any
@@ -63,6 +64,23 @@ def evaluate_pair(
     rewards_def: list[float] = []
     steps_list: list[int] = []
     detections_list: list[int] = []
+    attacker_latency_ms: list[float] = []
+    defender_latency_ms: list[float] = []
+    attacker_output_finite: list[bool] = []
+    defender_output_finite: list[bool] = []
+    invalid_action_count = 0
+    attacker_invalid_action_count = 0
+    defender_invalid_action_count = 0
+
+    # Observe the actual Q-network forward passes used by choose_action, without
+    # adding a second forward pass or changing the selected actions.
+    def inspect_output(target: list[bool]):
+        def hook(_module, _inputs, output):
+            target.append(bool(torch.isfinite(output).all().item()))
+        return hook
+
+    attacker_hook = attacker.online_net.register_forward_hook(inspect_output(attacker_output_finite))
+    defender_hook = defender.online_net.register_forward_hook(inspect_output(defender_output_finite))
     wins = 0
     wins_by_episode: list[int] = []
     for index in range(episodes):
@@ -73,8 +91,18 @@ def evaluate_pair(
         done = False
         step_count = 0
         while not done and step_count < env.max_steps:
+            before = time.perf_counter()
             att_action = attacker.choose_action(state)
+            attacker_latency_ms.append((time.perf_counter() - before) * 1000.0)
+            before = time.perf_counter()
             def_action = defender.choose_action(state)
+            defender_latency_ms.append((time.perf_counter() - before) * 1000.0)
+            if not isinstance(att_action, int) or not 0 <= att_action < attacker.action_size:
+                invalid_action_count += 1
+                attacker_invalid_action_count += 1
+            if not isinstance(def_action, int) or not 0 <= def_action < defender.action_size:
+                invalid_action_count += 1
+                defender_invalid_action_count += 1
             state, att_reward, def_reward, done = env.step([att_action], [def_action])
             total_att += float(att_reward)
             total_def += float(def_reward)
@@ -88,6 +116,10 @@ def evaluate_pair(
         wins += episode_won
         wins_by_episode.append(episode_won)
 
+    attacker_hook.remove()
+    defender_hook.remove()
+    attacker_p95 = float(np.percentile(attacker_latency_ms, 95)) if attacker_latency_ms else 0.0
+    defender_p95 = float(np.percentile(defender_latency_ms, 95)) if defender_latency_ms else 0.0
     return {
         "policy": name,
         "attacker_checkpoint": str(attacker_path),
@@ -108,6 +140,26 @@ def evaluate_pair(
         "mean_defender_reward": mean(rewards_def),
         "median_episode_steps": median(steps_list),
         "mean_detections_per_episode": mean(detections_list),
+        "inference_latency_ms": {
+            "attacker_p50": float(np.percentile(attacker_latency_ms, 50)) if attacker_latency_ms else 0.0,
+            "attacker_p95": attacker_p95,
+            "defender_p50": float(np.percentile(defender_latency_ms, 50)) if defender_latency_ms else 0.0,
+            "defender_p95": defender_p95,
+            "p95_max_across_roles": max(attacker_p95, defender_p95),
+            "timed_actions": min(len(attacker_latency_ms), len(defender_latency_ms)),
+            "measurement_environment": "evaluation host; not a Render-host measurement",
+        },
+        "safety_checks": {
+            "invalid_action_count": invalid_action_count,
+            "attacker_invalid_action_count": attacker_invalid_action_count,
+            "defender_invalid_action_count": defender_invalid_action_count,
+            "non_finite_output_count": sum(not value for value in attacker_output_finite)
+                + sum(not value for value in defender_output_finite),
+            "attacker_non_finite_output_count": sum(not value for value in attacker_output_finite),
+            "defender_non_finite_output_count": sum(not value for value in defender_output_finite),
+            "attacker_q_forward_passes": len(attacker_output_finite),
+            "defender_q_forward_passes": len(defender_output_finite),
+        },
     }
 
 

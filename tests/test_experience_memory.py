@@ -226,3 +226,54 @@ def test_storage_status_does_not_expose_database_path(tmp_path):
     assert "path" not in status
     assert str(tmp_path) not in str(status)
     memory.close()
+
+
+def test_memory_json_export_import_round_trip_and_collision_safety(tmp_path):
+    source = ExperienceMemory(tmp_path / "source.sqlite3")
+    episode = source.record(
+        agent="attacker", task="portability test", state_summary={"state":[0.0,1.0]},
+        action={"id":2}, outcome="failure", reward=-1.25,
+        lesson="Recorded for export/import validation.", tags=["test","export"], metadata={"episode":7},
+    )
+    source.remember_transition(
+        agent="attacker", context="1v1", state=[0.0,1.0], action=2, reward=-1.25,
+        next_state=[1.0,0.0], terminal=True, experience_id=episode["id"],
+    )
+    package_path=tmp_path/"private-export"/"memory.json"
+    result=source.export_json(package_path)
+    assert result["experiences_exported"]==1 and result["replay_transitions_exported"]==1
+    assert not (package_path.stat().st_mode & 0o077)
+    with pytest.raises(FileExistsError): source.export_json(package_path)
+    destination=ExperienceMemory(tmp_path/"destination.sqlite3")
+    assert destination.import_json(package_path)=={"experiences_imported":1,"replay_transitions_imported":1,"format_version":1}
+    assert destination.list()[0]["id"]==episode["id"]
+    assert destination.load_transitions(agent="attacker",context="1v1")==[{
+        "state":[0.0,1.0],"action":2,"reward":-1.25,"next_state":[1.0,0.0],"terminal":True,
+    }]
+    with pytest.raises(ValueError,match="already exists"): destination.import_json(package_path)
+    assert destination.summary()["total_experiences"]==1
+    assert destination.summary()["persisted_replay_transitions"]==1
+    source.close(); destination.close()
+
+
+def test_memory_import_rejects_bad_schema_oversize_and_partial_records(tmp_path):
+    memory=ExperienceMemory(tmp_path/"memory.sqlite3")
+    memory.record(agent="defender",task="existing",state_summary={},action=0,outcome="neutral",lesson="Already present.")
+    package=tmp_path/"invalid.json"
+    package.write_text('{"format":"cyberarena.experience-memory","format_version":1,"schema_version":999,"experiences":[],"replay_transitions":[]}',encoding="utf-8")
+    with pytest.raises(ValueError,match="incompatible"): memory.import_json(package)
+    package.write_text('{"format":"cyberarena.experience-memory","format_version":1,"schema_version":1,"experiences":[{"id":"partial"}],"replay_transitions":[]}',encoding="utf-8")
+    with pytest.raises(ValueError,match="incompatible shape"): memory.import_json(package)
+    with pytest.raises(ValueError,match="exceeds"): memory.import_json(package,max_bytes=10)
+    assert memory.summary()["total_experiences"]==1
+    memory.close()
+
+
+def test_storage_status_never_claims_durability_without_a_verified_test(tmp_path):
+    memory=ExperienceMemory(tmp_path/"memory.sqlite3")
+    status=memory.storage_status()
+    assert status["file_backed"] is True
+    assert status["persistence_verified"] is False
+    assert status["persistence_status"]=="unverified"
+    assert "not been verified" in status["durability_note"]
+    memory.close()

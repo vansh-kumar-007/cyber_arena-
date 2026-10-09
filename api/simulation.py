@@ -17,6 +17,7 @@ from agents.dqn_defender import DQNDefender
 from configs.network_config import ATTACK_TYPES, DEFENSE_TYPES
 from env.network_env import NetworkEnvironment
 from utils.experience_memory import ExperienceMemory
+from utils.model_paths import resolve_model_dir
 
 logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -40,7 +41,11 @@ class SimulationManager:
         self.attacker = DQNAttacker(state_size=self.state_size)
         self.defender = DQNDefender(state_size=self.state_size)
         self.memory = memory or ExperienceMemory()
-        self.model_dir = Path(model_dir) if model_dir else PROJECT_ROOT / "models"
+        self.model_dir = resolve_model_dir(PROJECT_ROOT, model_dir)
+        self.loaded_model_id: str | None = None
+        self.loaded_policy_source: str | None = None
+        self.loaded_checkpoint_sha256: dict[str, str] = {}
+        self.model_registry_error = False
         self.models_loaded = self._load_models()
         # Inference-only policy; an explicit training run controls exploration.
         self.attacker.epsilon = 0.0
@@ -51,8 +56,72 @@ class SimulationManager:
         self.memory_write_errors = 0
 
     def _load_models(self) -> bool:
-        """Load the first complete and architecture-compatible checkpoint pair."""
+        """Load a compatible active registry pair or the legacy stable pair.
+
+        If registry metadata shows a prior promotion but active.json is missing,
+        fail closed instead of silently switching the process back to legacy weights.
+        """
+        self.loaded_model_id = None
+        self.loaded_policy_source = None
+        self.loaded_checkpoint_sha256 = {}
+        self.model_registry_error = False
+
         context = f"{self.env.n_attackers}v{self.env.n_defenders}"
+        active_pointer = self.model_dir / "registry" / "active.json"
+        registry_dir = active_pointer.parent
+        if active_pointer.exists():
+            from utils.model_registry import ModelRegistry
+
+            registry = ModelRegistry(self.model_dir)
+            try:
+                active = registry.active_model()
+                if active is None:
+                    raise RuntimeError("active model pointer disappeared")
+                if active.get("scenario_context") != context:
+                    logger.warning(
+                        "Active model %s is for %s, not %s",
+                        active.get("model_id"), active.get("scenario_context"), context,
+                    )
+                    self.model_registry_error = True
+                    return False
+                candidate_attacker = DQNAttacker(state_size=self.state_size)
+                candidate_defender = DQNDefender(state_size=self.state_size)
+                candidate_attacker.load(str(self.model_dir / active["attacker_path"]))
+                candidate_defender.load(str(self.model_dir / active["defender_path"]))
+                self.attacker = candidate_attacker
+                self.defender = candidate_defender
+                self.loaded_model_id = active["model_id"]
+                self.loaded_policy_source = "registry"
+                self.loaded_checkpoint_sha256 = {
+                    "attacker": active["attacker_sha256"],
+                    "defender": active["defender_sha256"],
+                }
+                logger.info(
+                    "Loaded registry active model %s (attacker_sha256=%s, defender_sha256=%s)",
+                    self.loaded_model_id,
+                    self.loaded_checkpoint_sha256["attacker"],
+                    self.loaded_checkpoint_sha256["defender"],
+                )
+                return True
+            except Exception:
+                self.model_registry_error = True
+                logger.exception("Active model registry is invalid; refusing legacy/random fallback")
+                return False
+
+        # A missing pointer is only safe before registry promotion has occurred.
+        if registry_dir.exists():
+            try:
+                from utils.model_registry import ensure_legacy_fallback_safe
+
+                ensure_legacy_fallback_safe(self.model_dir)
+            except Exception:
+                self.model_registry_error = True
+                logger.exception(
+                    "Model registry exists without a trustworthy active pointer; "
+                    "refusing legacy/random fallback"
+                )
+                return False
+
         model_options = [
             (f"final_marl_attacker_{context}.pt", f"final_marl_defender_{context}_defender.pt"),
             (f"marl_{context}_attacker.pt", f"marl_{context}_defender.pt"),
@@ -79,11 +148,28 @@ class SimulationManager:
                 candidate_defender.load(str(defender_path))
                 self.attacker = candidate_attacker
                 self.defender = candidate_defender
-                logger.info("Loaded compatible model pair: %s / %s", attacker_path.name, defender_path.name)
+                self.loaded_model_id = f"legacy:{attacker_name}|{defender_name}"
+                self.loaded_policy_source = "legacy"
+                from utils.model_registry import sha256_file
+
+                self.loaded_checkpoint_sha256 = {
+                    "attacker": sha256_file(attacker_path),
+                    "defender": sha256_file(defender_path),
+                }
+                logger.info(
+                    "Loaded compatible model pair: %s / %s "
+                    "(attacker_sha256=%s, defender_sha256=%s)",
+                    attacker_path.name,
+                    defender_path.name,
+                    self.loaded_checkpoint_sha256["attacker"],
+                    self.loaded_checkpoint_sha256["defender"],
+                )
                 return True
             except Exception as exc:
-                logger.warning("Skipping incompatible checkpoint pair %s/%s: %s",
-                               attacker_path.name, defender_path.name, exc)
+                logger.warning(
+                    "Skipping incompatible checkpoint pair %s/%s: %s",
+                    attacker_name, defender_name, exc,
+                )
         logger.warning("No compatible trained model pair found; API uses untrained weights")
         return False
 
@@ -253,7 +339,39 @@ class SimulationManager:
         }
 
     def status(self) -> dict[str, Any]:
+        active_model_id = None
+        active_pointer = self.model_dir / "registry" / "active.json"
+        registry_pointer_exists = active_pointer.exists()
+        model_registry_error = bool(self.model_registry_error and not registry_pointer_exists)
+        if registry_pointer_exists:
+            try:
+                from utils.model_registry import ModelRegistry
+                active = ModelRegistry(self.model_dir).active_model()
+                active_model_id = active["model_id"] if active else None
+                model_registry_error = False
+            except Exception:
+                # Do not leak checkpoint paths or exception details through the API.
+                model_registry_error = True
+                logger.exception("Could not read active model registry status")
+
+        from utils.model_registry import policy_identity_is_consistent
+
+        policy_consistent = policy_identity_is_consistent(
+            registry_pointer_exists=registry_pointer_exists,
+            active_model_id=active_model_id,
+            loaded_model_id=self.loaded_model_id,
+            registry_error=model_registry_error,
+            models_loaded=self.models_loaded,
+            loaded_policy_source=self.loaded_policy_source,
+        )
+
         return {
+            "active_model_id": active_model_id,
+            "loaded_model_id": self.loaded_model_id,
+            "loaded_policy_source": self.loaded_policy_source,
+            "loaded_checkpoint_sha256": dict(self.loaded_checkpoint_sha256),
+            "policy_consistent": policy_consistent,
+            "model_registry_error": model_registry_error,
             "episode": self.episode_count,
             "step": self.env.current_step,
             "is_done": self.is_done,

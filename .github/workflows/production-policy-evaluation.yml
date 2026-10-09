@@ -1,0 +1,150 @@
+name: Production policy cross-play evaluation
+
+on:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "agents/**"
+      - "configs/**"
+      - "env/**"
+      - "evaluate_dqn.py"
+      - "scripts/evaluate_tracked_candidate_vs_production.py"
+      - "utils/model_registry.py"
+      - "models/final_marl_attacker_1v1.pt"
+      - "models/final_marl_defender_1v1_defender.pt"
+      - "models/marl_1v1_attacker.pt"
+      - "models/marl_1v1_defender.pt"
+      - ".github/workflows/production-policy-evaluation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare-tracked-candidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install CPU evaluation runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Evaluate candidate against the production-loaded checkpoint pair
+        env:
+          OMP_NUM_THREADS: "1"
+          MKL_NUM_THREADS: "1"
+          PYTHONHASHSEED: "20261010"
+        run: |
+          python scripts/evaluate_tracked_candidate_vs_production.py \
+            --episodes-per-seed-block 100 \
+            --seed-blocks 20361010 20362010 20363010 \
+            --output artifacts/production-policy-comparison.json
+      - name: Probe live Render health/readiness (read-only)
+        continue-on-error: true
+        run: |
+          mkdir -p artifacts
+          python - <<'PY'
+          import json
+          import time
+          from urllib.error import URLError, HTTPError
+          from urllib.request import Request, urlopen
+          from pathlib import Path
+
+          import hashlib
+
+          url = "https://cyberarena-api.onrender.com/health"
+          memory_url = "https://cyberarena-api.onrender.com/memory?limit=1"
+          result = {"probe_success": False, "url": url, "memory_read_success": False}
+          for attempt in range(1, 6):
+              try:
+                  request = Request(url, headers={"Accept": "application/json"}, method="GET")
+                  with urlopen(request, timeout=45) as response:
+                      body = json.loads(response.read().decode("utf-8"))
+                      result.update({
+                          "status_code": response.status,
+                          "url": url,
+                          "attempt": attempt,
+                          "health": {
+                              "status": body.get("status"),
+                              "ready": body.get("ready"),
+                              "readiness": body.get("readiness"),
+                              "models_loaded": body.get("models_loaded"),
+                              "memory_available": body.get("memory_available"),
+                              "memory_write_errors": body.get("memory_write_errors"),
+                              "memory_storage": body.get("memory_storage"),
+                          },
+                      })
+                  break
+              except Exception as exc:
+                  result = {
+                      "probe_success": False,
+                      "url": url,
+                      "memory_read_success": False,
+                      "attempt": attempt,
+                      "error_type": type(exc).__name__,
+                      "error": str(exc)[:500],
+                  }
+                  if attempt < 5:
+                      time.sleep(2)
+
+          if result.get("health", {}).get("ready") is True:
+              try:
+                  request = Request(memory_url, headers={"Accept": "application/json"}, method="GET")
+                  with urlopen(request, timeout=45) as response:
+                      memory_body = json.loads(response.read().decode("utf-8"))
+                      data = memory_body.get("data") or {}
+                      summary = data.get("summary") or {}
+                      experiences = data.get("experiences") or []
+                      sample_id = experiences[0].get("id") if experiences else None
+                      result["memory_read_success"] = (
+                          response.status == 200 and memory_body.get("success") is True
+                      )
+                      result["memory_read"] = {
+                          "status_code": response.status,
+                          "url": memory_url,
+                          "total_experiences": summary.get("total_experiences"),
+                          "persisted_replay_transitions": summary.get("persisted_replay_transitions"),
+                          "replay_transitions_by_agent": summary.get("replay_transitions_by_agent"),
+                          "sample_record_returned": sample_id is not None,
+                          "sample_record_id_sha256": (
+                              hashlib.sha256(str(sample_id).encode("utf-8")).hexdigest()
+                              if sample_id is not None else None
+                          ),
+                          "note": "Only counts and a hash of the sample ID are recorded; experience contents are not copied into CI logs.",
+                      }
+              except Exception as exc:
+                  result["memory_read_success"] = False
+                  result["memory_read"] = {
+                      "url": memory_url,
+                      "error_type": type(exc).__name__,
+                      "error": str(exc)[:500],
+                  }
+
+          result["probe_success"] = (
+              result.get("status_code") == 200
+              and result.get("health", {}).get("ready") is True
+              and result.get("memory_read_success") is True
+          )
+          Path("artifacts/render-live-health.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True) + chr(10),
+              encoding="utf-8",
+          )
+          print(json.dumps(result, indent=2, sort_keys=True))
+          if not result.get("probe_success") or result.get("health", {}).get("ready") is not True:
+              raise SystemExit(1)
+          PY
+      - name: Upload non-promoting evaluation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cyberarena-production-policy-comparison
+          path: |
+            artifacts/production-policy-comparison.json
+            artifacts/render-live-health.json
+          if-no-files-found: warn
+          retention-days: 30

@@ -1,6 +1,7 @@
 """Small CPU-only integration smoke test for training, replay, and checkpoints."""
 from __future__ import annotations
 
+import json
 import random
 
 import pytest
@@ -47,6 +48,15 @@ def test_short_run_trains_and_persists_replay_and_checkpoints(tmp_path, monkeypa
     # Short runs also write the separate latest-state pair required by resume=True.
     assert (tmp_path / "models" / "marl_2v2_attacker.pt").is_file()
     assert (tmp_path / "models" / "marl_2v2_defender.pt").is_file()
+    reports=list((tmp_path/"models"/"reports").glob("training_2v2_seed-2026_*.json"))
+    assert len(reports)==1
+    report=json.loads(reports[0].read_text(encoding="utf-8"))
+    assert report["run_status"]=="completed"
+    assert report["training_config"]["seed"]==2026
+    assert report["training_config"]["episodes_completed_this_run"]==10
+    assert report["metrics_summary"]["attacker_win_rate"] is not None
+    assert len(report["checkpoint_artifacts"]["attacker_candidate"]["sha256"])==64
+    assert len(report["checkpoint_artifacts"]["defender_candidate"]["sha256"])==64
 
     # The API must load the requested scenario's checkpoint pair.
     manager = SimulationManager(memory=memory, model_dir=tmp_path / "models", seed=2026)
@@ -152,4 +162,36 @@ def test_resume_fails_closed_when_checkpoint_pair_is_missing(tmp_path, monkeypat
             memory=memory,
             resume=True,
         )
+    memory.close()
+
+
+def test_stop_before_first_episode_never_writes_random_candidate(tmp_path, monkeypatch):
+    monkeypatch.setattr(train_dqn, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(train_dqn, "_STOP_REQUESTED", True)
+    memory = ExperienceMemory(tmp_path / "runtime" / "memory.sqlite3")
+    output_dir = tmp_path / "separate-output"
+
+    metrics, _, _ = train_dqn.train_marl(
+        n_attackers=1,
+        n_defenders=1,
+        num_episodes=1,
+        save_models=True,
+        seed=123,
+        memory=memory,
+        restore_replay=False,
+        output_dir=output_dir,
+    )
+
+    assert metrics.attacker_rewards == []
+    assert metrics.defender_rewards == []
+    assert not (output_dir / "marl_1v1_attacker.pt").exists()
+    assert not (output_dir / "marl_1v1_defender.pt").exists()
+    assert not (output_dir / "final_marl_attacker_1v1.pt").exists()
+    assert not (output_dir / "final_marl_defender_1v1_defender.pt").exists()
+    reports = list((output_dir / "reports").glob("training_1v1_seed-123_*.json"))
+    assert len(reports) == 1
+    report = json.loads(reports[0].read_text(encoding="utf-8"))
+    assert report["run_status"] == "interrupted"
+    assert report["training_config"]["episodes_completed_this_run"] == 0
+    assert report["checkpoint_artifacts"] == {}
     memory.close()

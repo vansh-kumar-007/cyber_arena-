@@ -169,7 +169,7 @@ def main() -> int:
             "reason": "Even a positive multi-seed result on this limited 1v1 suite is not a production promotion test or a comparison against a verified production checkpoint.",
         },
         "limitations": [
-            "Baseline for each training seed is the random-initialized pair that the candidate starts from, not a production-trained checkpoint.",
+            "This benchmark's baseline is intentionally the random-initialized pair that the candidate starts from; it measures a training effect, not performance versus the tracked production policy.",
             "Three training seeds and one 1v1 scenario are still a bounded experiment and do not establish generalization to other team sizes.",
             "Clustered bootstrap resamples independent training-seed runs first, then paired evaluation episodes within each run.",
             "This experiment does not verify the durability of Render's production filesystem or backend restarts.",

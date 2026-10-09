@@ -36,6 +36,12 @@ def api_client(monkeypatch):
                 "att_memory": 0,
                 "def_memory": 0,
                 "models_loaded": True,
+                "active_model_id": None,
+                "loaded_model_id": "legacy:test-attacker|test-defender",
+                "loaded_policy_source": "legacy",
+                "loaded_checkpoint_sha256": {"attacker": "a" * 64, "defender": "b" * 64},
+                "policy_consistent": True,
+                "model_registry_error": False,
                 "state_size": 37,
                 "n_attackers": 1,
                 "n_defenders": 1,
@@ -66,8 +72,9 @@ def api_client(monkeypatch):
     sys.modules.pop("api.main", None)
 
 
-def test_health_and_read_only_memory_routes(api_client):
+def test_health_and_read_only_memory_routes(api_client, monkeypatch):
     client, _ = api_client
+    monkeypatch.setenv("CYBERARENA_ADMIN_TOKEN", "test-secret")
     health = client.get("/health")
     assert health.status_code == 200
     assert health.json()["status"] == "ok"
@@ -75,11 +82,19 @@ def test_health_and_read_only_memory_routes(api_client):
     assert health.json()["readiness"] == "ready"
     assert health.json()["memory_write_errors"] == 0
     assert health.json()["state_size"] == 37
+    assert health.json()["policy_consistent"] is True
+    assert health.json()["loaded_policy_source"] == "legacy"
+    assert health.json()["loaded_model_id"] == "legacy:test-attacker|test-defender"
+    assert health.json()["model_registry_error"] is False
 
-    response = client.get("/memory?limit=10")
+    assert client.get("/memory?limit=10").status_code == 403
+    assert client.get("/memory/search?q=observation").status_code == 403
+    headers = {"X-Admin-Token": "test-secret"}
+    response = client.get("/memory?limit=10", headers=headers)
     assert response.status_code == 200
     assert response.json()["data"]["summary"]["total_experiences"] == 1
     assert response.json()["data"]["experiences"][0]["lesson"] == "This is a sample persisted observation."
+    assert client.get("/memory/search?q=observation", headers=headers).status_code == 200
 
 
 def test_memory_mutations_require_server_token_and_reset_confirmation(api_client, monkeypatch):
@@ -144,3 +159,40 @@ def test_health_reports_memory_write_failures_as_not_ready(api_client):
     assert response.json()["ready"] is False
     assert response.json()["readiness"] == "degraded"
     assert response.json()["memory_write_errors"] == 1
+
+
+
+def test_health_marks_external_registry_promotion_not_ready_until_loaded(api_client, monkeypatch):
+    client, api_module = api_client
+    original_status = api_module.sim.status
+
+    def status_with_pointer_mismatch():
+        return {
+            **original_status(),
+            "active_model_id": "candidate-v2",
+            "loaded_model_id": "stable-v1",
+            "policy_consistent": False,
+        }
+
+    monkeypatch.setattr(api_module.sim, "status", status_with_pointer_mismatch)
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json()["ready"] is False
+    assert response.json()["readiness"] == "degraded"
+    assert response.json()["active_model_id"] == "candidate-v2"
+    assert response.json()["loaded_model_id"] == "stable-v1"
+    assert response.json()["policy_consistent"] is False
+
+
+def test_step_and_weights_fail_closed_without_a_consistent_policy(api_client, monkeypatch):
+    client, api_module = api_client
+    original_status = api_module.sim.status
+    def status_without_ready_policy():
+        return {**original_status(), "models_loaded": False, "policy_consistent": False, "model_registry_error": False}
+    monkeypatch.setattr(api_module.sim, "status", status_without_ready_policy)
+    step = client.post("/step")
+    weights = client.get("/weights")
+    assert step.status_code == 503
+    assert "will not serve randomly initialized weights" in step.json()["detail"]
+    assert weights.status_code == 503
