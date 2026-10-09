@@ -1,0 +1,54 @@
+name: Production policy cross-play evaluation
+
+on:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "agents/**"
+      - "configs/**"
+      - "env/**"
+      - "evaluate_dqn.py"
+      - "scripts/evaluate_tracked_candidate_vs_production.py"
+      - "utils/model_registry.py"
+      - "models/final_marl_attacker_1v1.pt"
+      - "models/final_marl_defender_1v1_defender.pt"
+      - "models/marl_1v1_attacker.pt"
+      - "models/marl_1v1_defender.pt"
+      - ".github/workflows/production-policy-evaluation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare-tracked-candidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install CPU evaluation runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Evaluate candidate against the production-loaded checkpoint pair
+        env:
+          OMP_NUM_THREADS: "1"
+          MKL_NUM_THREADS: "1"
+          PYTHONHASHSEED: "20261010"
+        run: |
+          python scripts/evaluate_tracked_candidate_vs_production.py \
+            --episodes-per-seed-block 100 \
+            --seed-blocks 20361010 20362010 20363010 \
+            --output artifacts/production-policy-comparison.json
+      - name: Upload non-promoting evaluation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cyberarena-production-policy-comparison
+          path: artifacts/production-policy-comparison.json
+          if-no-files-found: warn
+          retention-days: 30
