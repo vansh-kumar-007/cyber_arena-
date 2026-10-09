@@ -69,6 +69,8 @@ def evaluate_pair(
     attacker_output_finite: list[bool] = []
     defender_output_finite: list[bool] = []
     invalid_action_count = 0
+    attacker_invalid_action_count = 0
+    defender_invalid_action_count = 0
 
     # Observe the actual Q-network forward passes used by choose_action, without
     # adding a second forward pass or changing the selected actions.
@@ -97,8 +99,10 @@ def evaluate_pair(
             defender_latency_ms.append((time.perf_counter() - before) * 1000.0)
             if not isinstance(att_action, int) or not 0 <= att_action < attacker.action_size:
                 invalid_action_count += 1
+                attacker_invalid_action_count += 1
             if not isinstance(def_action, int) or not 0 <= def_action < defender.action_size:
                 invalid_action_count += 1
+                defender_invalid_action_count += 1
             state, att_reward, def_reward, done = env.step([att_action], [def_action])
             total_att += float(att_reward)
             total_def += float(def_reward)
@@ -147,8 +151,12 @@ def evaluate_pair(
         },
         "safety_checks": {
             "invalid_action_count": invalid_action_count,
+            "attacker_invalid_action_count": attacker_invalid_action_count,
+            "defender_invalid_action_count": defender_invalid_action_count,
             "non_finite_output_count": sum(not value for value in attacker_output_finite)
                 + sum(not value for value in defender_output_finite),
+            "attacker_non_finite_output_count": sum(not value for value in attacker_output_finite),
+            "defender_non_finite_output_count": sum(not value for value in defender_output_finite),
             "attacker_q_forward_passes": len(attacker_output_finite),
             "defender_q_forward_passes": len(defender_output_finite),
         },
