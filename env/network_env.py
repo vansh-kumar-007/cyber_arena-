@@ -12,7 +12,15 @@ from env.reward import calculate_attacker_reward, calculate_defender_reward
 from env.state_encoder import MAX_AGENTS, encode_state
 
 class NetworkEnvironment:
-    def __init__(self, n_attackers=1, n_defenders=1):
+    def __init__(self, n_attackers=1, n_defenders=1, seed=None, max_steps=50):
+        if not isinstance(n_attackers, int) or isinstance(n_attackers, bool) or not 1 <= n_attackers <= MAX_AGENTS:
+            raise ValueError(f"n_attackers must be an integer between 1 and {MAX_AGENTS}")
+        if not isinstance(n_defenders, int) or isinstance(n_defenders, bool) or not 1 <= n_defenders <= MAX_AGENTS:
+            raise ValueError(f"n_defenders must be an integer between 1 and {MAX_AGENTS}")
+        if not isinstance(max_steps, int) or isinstance(max_steps, bool) or max_steps < 1:
+            raise ValueError("max_steps must be a positive integer")
+        self.max_steps = max_steps
+        self.rng = random.Random(seed)
         self.topology = NETWORK_TOPOLOGY
         self.n_attackers = n_attackers
         self.n_defenders = n_defenders
