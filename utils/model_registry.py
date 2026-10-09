@@ -228,7 +228,7 @@ class ModelRegistry:
             if not isinstance(metrics.get(key), str) or not metrics[key].strip():
                 errors.append(f"{key} is required for reproducibility")
 
-        for key, minimum in (("training_seed_count", 3), ("paired_episodes", 300)):
+        for key, minimum in (("evaluation_seed_count", 3), ("paired_episodes", 300)):
             value = metrics.get(key)
             if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
                 errors.append(f"{key} must be an integer >= {minimum}")
