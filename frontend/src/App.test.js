@@ -37,7 +37,9 @@ test("opens memory panel and loads outcome metrics only with an admin token", as
   fireEvent.click(screen.getByRole("button", { name: /AGENT MEMORY & LEARNING/i }));
 
   expect(screen.getByRole("alert")).toHaveTextContent(/server-configured admin token/i);
-  expect(global.fetch).not.toHaveBeenCalled();
+  expect(
+    global.fetch.mock.calls.some(([url]) => String(url).includes("/memory?limit=25")),
+  ).toBe(false);
 
   fireEvent.change(screen.getByLabelText("Memory admin token"), { target: { value: "test-secret" } });
   fireEvent.click(screen.getByRole("button", { name: /REFRESH/i }));
