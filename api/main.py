@@ -80,7 +80,11 @@ def health():
     """Report process liveness separately from readiness to serve trained policies."""
     with simulation_lock:
         status = sim.status()
-    ready = bool(status["models_loaded"]) and status["memory_write_errors"] == 0
+    ready = (
+        bool(status["models_loaded"])
+        and status["memory_write_errors"] == 0
+        and status["policy_consistent"] is True
+    )
     memory_storage = sim.memory.storage_status()
     return {
         # Keep status="ok" for backwards-compatible liveness probes. Consumers
@@ -89,6 +93,12 @@ def health():
         "ready": ready,
         "readiness": "ready" if ready else "degraded",
         "models_loaded": status["models_loaded"],
+        "active_model_id": status["active_model_id"],
+        "loaded_model_id": status["loaded_model_id"],
+        "loaded_policy_source": status["loaded_policy_source"],
+        "loaded_checkpoint_sha256": status["loaded_checkpoint_sha256"],
+        "policy_consistent": status["policy_consistent"],
+        "model_registry_error": status["model_registry_error"],
         "state_size": status["state_size"],
         "n_attackers": status["n_attackers"],
         "n_defenders": status["n_defenders"],
