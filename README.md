@@ -722,7 +722,7 @@ For a genuine before/after benchmark, preserve a baseline checkpoint pair before
 
 ### What is learned, and what is recorded?
 
-The DQN's policy learning occurs in `train_dqn.py` through Double DQN targets and prioritized experience replay. The trainer now persists individual state/action/reward/next-state/terminal transitions in SQLite, partitioned by team-size scenario, and reloads up to 10,000 transitions per agent/scenario on a later run. Replayed priorities are reinitialized when loaded; historical PER priorities are not yet persisted. API gameplay is **inference-only by default**: a public game request does not update or overwrite deployed weights. It separately writes auditable episodic records, including action, observed reward, outcome label, state summary, and a cautious lesson.
+The DQN's policy learning occurs in `train_dqn.py` through Double DQN targets and prioritized experience replay. The trainer now persists individual state/action/reward/next-state/terminal transitions in SQLite, partitioned by team-size scenario, and reloads up to 10,000 transitions per agent/scenario on a later run. Unlinked API/gameplay history is capped separately by `CYBERARENA_UNLINKED_EXPERIENCE_LIMIT`, so the episode log is bounded while transition-linked training experiences stay auditable. Replayed priorities are reinitialized when loaded; historical PER priorities are not yet persisted. API gameplay is **inference-only by default**: a public game request does not update or overwrite deployed weights. It separately writes auditable episodic records, including action, observed reward, outcome label, state summary, and a cautious lesson.
 
 Stored records are historical observations, not proof of causality. Retrieval currently uses deterministic lexical matching, not vector embeddings. Displayed precedents provide context to a person reviewing the action; **they do not directly override the DQN policy**, and observed success rate is not a controlled benchmark. The decision panel displays actual Q-value estimates from the loaded network. Q-values are relative estimates of expected return, not probabilities or hidden chain-of-thought.
 
@@ -756,8 +756,9 @@ Supported server environment variables:
 | Variable | Purpose |
 |---|---|
 | `CYBERARENA_CORS_ORIGINS` | Comma-separated allowed browser origins. Defaults to the published Vercel URL and localhost development origins. |
-| `CYBERARENA_MEMORY_DB` | SQLite file path; defaults to `data/agent_memory.sqlite3`. |
+| `CYBERARENA_MEMORY_DB` | SQLite file path; defaults to `<repo>/data/agent_memory.sqlite3`. |
 | `CYBERARENA_ADMIN_TOKEN` | Server-side token required for lesson edits/deletes/resets. Never commit it or bake it into the frontend bundle. |
+| `CYBERARENA_UNLINKED_EXPERIENCE_LIMIT` | Maximum retained unlinked episode records, default `20000` (valid range `1`–`1000000`); old unlinked records are trimmed at startup and every 1000 writes. Records linked to replay transitions are preserved. |
 | `LOG_LEVEL` | Python log level, default `INFO`. |
 | `PORT` | Backend port, default `8000`. |
 
