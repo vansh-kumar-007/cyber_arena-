@@ -22,7 +22,7 @@ jobs:
       - name: Install test tools
         run: python -m pip install --upgrade pip && python -m pip install -r requirements-dev.txt
       - name: Compile Python source
-        run: python -m compileall -q agents api configs env tests utils
+        run: python -m compileall -q agents api configs env tests utils main.py train_dqn.py evaluate_dqn.py
       - name: Run deterministic environment and memory tests
         run: python -m pytest -q tests
 
@@ -44,3 +44,18 @@ jobs:
         run: npm test -- --watchAll=false
       - name: Build frontend
         run: npm run build
+
+  ml-training-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install NumPy and CPU PyTorch
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Verify one small training episode
+        run: python -m pytest -q tests/test_dqn_smoke.py
