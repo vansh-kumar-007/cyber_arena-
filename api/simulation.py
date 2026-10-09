@@ -280,7 +280,21 @@ class SimulationManager:
         }
 
     def status(self) -> dict[str, Any]:
+        active_model_id = None
+        model_registry_error = False
+        active_pointer = self.model_dir / "registry" / "active.json"
+        if active_pointer.exists():
+            try:
+                from utils.model_registry import ModelRegistry
+                active = ModelRegistry(self.model_dir).active_model()
+                active_model_id = active["model_id"] if active else None
+            except Exception:
+                # Do not leak checkpoint paths or exception details through the API.
+                model_registry_error = True
+                logger.exception("Could not read active model registry status")
         return {
+            "active_model_id": active_model_id,
+            "model_registry_error": model_registry_error,
             "episode": self.episode_count,
             "step": self.env.current_step,
             "is_done": self.is_done,
