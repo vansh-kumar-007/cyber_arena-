@@ -24,7 +24,7 @@ jobs:
       - name: Compile Python source
         run: python -m compileall -q agents api configs env tests utils
       - name: Run deterministic environment and memory tests
-        run: pytest -q tests
+        run: python -m pytest -q tests
 
   frontend-build:
     runs-on: ubuntu-latest
