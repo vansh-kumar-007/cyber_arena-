@@ -31,10 +31,7 @@ CyberArena RL is a **full-stack multi-agent reinforcement learning simulation** 
 models an adversarial cybersecurity environment where an attacker (Red Team 🔴) and 
 a defender (Blue Team 🔵) continuously adapt their strategies using **Deep Q-Networks**.
 
-Both agents learn purely through interaction — no rules, no hardcoding. Complex 
-behaviors emerge naturally over thousands of episodes. The entire system is deployed 
-live with a **React pixel-art game frontend**, **FastAPI backend**, and 
-**Streamlit analytics dashboard**.
+The agents use Double DQN policies trained by an explicit training pipeline. The deployed FastAPI game API performs policy inference and records observed experience; it does not update model weights during gameplay requests. Training runs and checkpoint changes must be launched and evaluated separately. The system includes a React pixel-art frontend, a FastAPI backend, and a Streamlit analytics dashboard.
 
 > "A simulated cyber battlefield where AI attackers and AI defenders learn,
 > adapt, and evolve against each other — powered by real neural networks."
@@ -112,7 +109,7 @@ while defenders update their strategies. CyberArena RL explores autonomous learn
 │   │   └──────────────┘         │  12 Attack Types      │    │  │
 │   │   ┌──────────────┐         │  12 Defense Types     │    │  │
 │   │   │ DQN Defender │────────►│  Reward System        │    │  │
-│   │   │ 29→128→128→12│         └──────────────────────┘    │  │
+│   │   │ 37→128→128→12│         └──────────────────────┘    │  │
 │   │   └──────────────┘                                      │  │
 │   └─────────────────────────────────────────────────────────┘  │
 │                                                                 │
@@ -123,6 +120,14 @@ while defenders update their strategies. CyberArena RL explores autonomous learn
 ```
 
 ---
+
+## Production behavior, learning, and memory durability
+
+The live API is an **inference service**, not an online-training worker. `POST /step` uses the currently loaded attacker/defender policies and records observed experiences. Gradient updates occur only when the explicit `train_dqn.py` training pipeline is run. Memory records, replay transitions, and trained policy checkpoints are different artifacts: recording experience alone does not change model weights.
+
+The FastAPI process stores episodic memory in SQLite. Set `CYBERARENA_MEMORY_DB` to a file path on storage that is genuinely persistent for the backend host. A local file-backed SQLite database can survive a process restart, but it will not necessarily survive a redeploy or instance replacement if it resides on an ephemeral filesystem. The `/health` response exposes non-sensitive storage diagnostics; `file_backed: true` does **not** prove the host has a persistent disk attached.
+
+Before claiming durable production learning history, configure and verify the backend host's persistent disk/mount and database path, then test a non-destructive write/read across a real restart or redeploy. Store model checkpoints on an independently durable artifact volume or object store when training happens outside the serving instance. The deployed API must not promote an experimental checkpoint automatically; evaluate candidates against a baseline and keep rollback artifacts before changing the active policy.
 
 ## 🧠 Deep Q-Network (DQN)
 
